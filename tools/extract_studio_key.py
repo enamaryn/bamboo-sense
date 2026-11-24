@@ -512,6 +512,24 @@ def main():
         scan_bytes_for_certs(chunk, certs, seen)
 
     print(f"[i] Diagnostic : {len(certs)} certificat(s) vus en memoire/plugin.")
+    if certs:
+        lines = []
+        for c in certs:
+            try:
+                cn = c.subject.rfc4514_string()
+                iss = c.issuer.rfc4514_string()
+                cid = format(c.serial_number, "x") + iss
+                lines.append(f"  - subject={cn}  issuer={iss}\n    cert_id={cid}")
+            except Exception:
+                pass
+        print("[i] Certificats vus :")
+        print("\n".join(lines))
+        try:
+            Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+            (Path(args.out_dir) / "studio_certs_seen.txt").write_text(
+                "\n".join(lines), newline="\n")
+        except Exception:
+            pass
 
     if not key:
         print("\n[!] Blob de cle introuvable.")
