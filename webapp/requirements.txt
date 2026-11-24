@@ -1,0 +1,3 @@
+# BambooSense Keyforge — web app dependencies
+cryptography>=42      # mint the self-signed cert + CRL, sign print.* commands
+paho-mqtt>=1.6        # LAN link to the printer (8883, TLS, bblp+access code)

@@ -5,3 +5,6 @@ firmware/src/secrets.h
 crypto/mykey.pem
 firmware/src/testcerts.h
 .slapp/
+webapp/.workdir/
+__pycache__/
+*.pyc
