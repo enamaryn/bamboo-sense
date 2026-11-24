@@ -172,14 +172,21 @@ def find_studio_material(studio_dir=None):
     dirs += [os.path.join(home, ".config", "BambuStudio"),
              os.path.join(home, "Library", "Application Support", "BambuStudio"),
              home, ".", os.path.dirname(os.path.abspath(__file__))]
+    key_names = ["slicer_key.pem", "slicer_key.txt", "app_key.pem",
+                 os.path.join("appcert_out", "app_key.pem"),
+                 os.path.join("autocap", "out", "slicer_key.pem")]
     key_path = None
     for d in dirs:
-        p = os.path.join(d, "slicer_key.pem")
-        if os.path.isfile(p):
-            key_path = p
+        for kn in key_names:
+            p = os.path.join(d, kn)
+            if os.path.isfile(p):
+                key_path = p
+                break
+        if key_path:
             break
     cert_pem = None
-    cert_names = ["slicer_cert.pem", "slicer.pem",
+    cert_names = ["slicer_cert.pem", "slicer.pem", "app_cert.pem",
+                  os.path.join("appcert_out", "app_cert.pem"),
                   os.path.join("cert", "slicer_base64.cer"),
                   os.path.join("resources", "cert", "slicer_base64.cer"),
                   "slicer_base64.cer"]
