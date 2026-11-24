@@ -73,12 +73,38 @@ les octets signés en retirant le préfixe `{"header":…},` puis en repréfixan
 `{`. La valeur `print` signée doit être **octet-pour-octet** identique à celle
 émise sur le fil.
 
-`err_code=84033546` (`0x0502400A`) = **« bad signature »** (et non « cert
-absent », qui serait `84033545`). Notre erreur venait du `header` placé à la
-**fin** : l'imprimante incluait alors le header dans sa reconstruction →
-signature fausse. Corrigé en mettant le header en tête.
-
 `sequence_id` doit être **≥ 2000** et non réutilisé.
+
+### Mode sécurisé vs Mode Développeur (IMPORTANT)
+
+Sur firmware **sécurisé** (Mode Développeur OFF), l'imprimante n'accepte une
+signature `print.*` que d'un certificat qui **chaîne jusqu'à la racine Bambu**.
+Un cert **auto-signé** s'installe (l'install est permissive) mais sa signature
+est **rejetée** avec `err_code=84033546` (`0x0502400A`, « bad signature »).
+C'est exactement ce qu'on observe sur la P2S à jour. Deux solutions :
+
+**A) Activer le Mode Développeur** sur l'imprimante (écran → réglages). Le
+firmware ignore alors la vérification de signature → les commandes `gcode_line`
+**non signées** passent. L'option 9 (HOMING) essaie d'abord ce mode. C'est le
+plus simple pour piloter en local.
+
+**B) Signer avec le certificat Studio partagé de Bambu.** Même clé pour tous,
+intégrée dans Bambu Studio, et le leaf correspondant est déjà de confiance sur
+l'imprimante. On l'extrait de son installation Studio (p.ex.
+[BambuSlicerKeySaver](https://github.com/danielwoz/BambuSlicerKeySaver)) qui
+produit `slicer_key.pem` + `slicer_cert.pem` (+ `slicer_cert_id.txt`), puis :
+
+```bat
+python keyforge_connect.py --studio-key slicer_key.pem --studio-cert slicer_cert.pem
+```
+
+Le script dérive le `cert_id` du cert, signe avec la clé Studio (enveloppe
+header-first), et l'imprimante accepte — sans activer le Mode Développeur.
+Après un reboot le trust store est vidé : ajoute `--studio-crl slicer_crl.pem`
+pour réinstaller la chaîne.
+
+> Référence du schéma : `ClusterM/open-bamboo-networking` §10.1–10.4, §10.2
+> (où vivent les secrets Studio).
 
 ### Lumière et commandes `system`
 

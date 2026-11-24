@@ -121,6 +121,31 @@ def load_identity(bundle_path):
     return ident, printer
 
 
+def cert_id_from_pem(cert_pem):
+    """cert_id = serial(hex minuscule) + issuer(RFC4514), depuis le leaf (1er cert)."""
+    c = x509.load_pem_x509_certificate(cert_pem.encode())
+    return format(c.serial_number, "x") + c.issuer.rfc4514_string()
+
+
+def load_studio_identity(key_path, cert_path=None, cert_id=None, crl_path=None):
+    """Construit une identite de signature a partir de la cle Studio partagee.
+    Suffit pour SIGNER (le leaf Studio est deja de confiance sur l'imprimante) ;
+    avec cert+crl on peut aussi reinstaller la chaine apres un reboot."""
+    from pathlib import Path as _P
+    key_pem = _P(key_path).read_text()
+    cert_pem = _P(cert_path).read_text() if cert_path else ""
+    if cert_id and os.path.isfile(cert_id):
+        cert_id = _P(cert_id).read_text().strip()
+    if not cert_id:
+        if not cert_pem:
+            raise RuntimeError("fournis --studio-cert ou --studio-cert-id avec --studio-key")
+        cert_id = cert_id_from_pem(cert_pem)
+    crl_pem = _P(crl_path).read_text() if crl_path else ""
+    return {"key_pem": key_pem, "cert_pem": cert_pem, "crl_pem": crl_pem,
+            "cert_id": cert_id, "cn": "studio-app", "serial_hex": "",
+            "serial": "studio", "created": "", "studio": True}
+
+
 # ===========================================================================
 # signature d'une commande print.*  (identique au firmware verifie)
 # ===========================================================================
@@ -328,6 +353,17 @@ class Printer:
         return self.send_signed(ident, "print", print_obj,
                                 user_id=user_id, include_uid=include_uid)
 
+    def send_unsigned(self, top, obj):
+        """Publie une commande SANS header (fonctionne si le Mode Developpeur
+        est actif sur l'imprimante : la verif de signature est alors ignoree)."""
+        seq = self.next_seq()
+        o = {"sequence_id": seq, **obj}
+        wire = '{"' + top + '":' + json.dumps(o, separators=(",", ":")) + "}"
+        logln(f"UNSIGNED {wire[:120]}")
+        out = self._cycle([wire], collect=5.0)
+        return next((a for a in out["acks"] if str(a.get("sequence_id")) == str(seq)), None) \
+            or (out["acks"][-1] if out["acks"] else None)
+
     def probe_signature(self, ident):
         """Essaie la matrice (padding x forme x timestamp) avec clean_print_error
         (inoffensif). Renvoie [(libelle, kwargs, ack), ...]."""
@@ -474,39 +510,41 @@ def _home_try(pr, ident, sign_kw, encrypt=False):
 
 
 def do_home(pr, ident, user_id):
-    print("    ...HOMING (G28), param clair signe...")
-    ack = _home_try(pr, ident, dict(user_id=user_id, include_uid=True))
+    print("    ...HOMING (G28)...")
+    # 1) MODE DEVELOPPEUR : commande NON signee (le firmware ignore la signature)
+    print("    1) essai NON signe (= Mode Developpeur) ...")
+    ack = pr.send_unsigned("print", {"command": "gcode_line", "param": "G28\n"})
+    print(f"       -> {_fmt(ack)}")
     if _ack_ok(ack):
-        print("    -> OK : les axes doivent bouger.")
+        print("       OK ! Mode Developpeur actif : aucune signature necessaire. Axes en mouvement.")
+        return
+    ec = ack.get("err_code") if ack else None
+    if ec == 84033543:
+        print("       (84033543 = 'non signe refuse' -> imprimante en mode SECURISE)")
+
+    # 2) SIGNE avec l'identite courante (cert auto-signe, ou cle Studio si chargee)
+    print("    2) essai SIGNE avec l'identite courante ...")
+    ack2, _ = pr.gcode(ident, "G28", encrypt=False)
+    print(f"       -> {_fmt(ack2)}")
+    if _ack_ok(ack2):
+        print("       OK signe : axes en mouvement.")
         return
 
-    # Signature refusee -> sonder padding x forme (clean_print_error, inoffensif)
-    print("    signature refusee. Sonde padding x forme (clean_print_error)...")
-    winner = None
-    for label, kw, pack in pr.probe_signature(ident):
-        print(f"      {label:14s} -> {_fmt(pack)}")
-        if winner is None and _ack_ok(pack):
-            winner = (label, kw)
-
-    if not winner:
-        print("    [i] aucune forme acceptee (toujours 0x0502400A).")
-        print("        Envoie le journal : le firmware a probablement change de schema.")
-        return
-
-    label, kw = winner
-    print(f"    forme acceptee : {label}. Nouvel essai du homing...")
-    ack = _home_try(pr, ident, kw, encrypt=False)
-    if _ack_ok(ack):
-        print(f"    -> OK avec {label} : les axes doivent bouger.")
-        return
-    if pr.printer_cert:
-        print("    (clair refuse — essai param_enc avec la forme acceptee)")
-        ack = _home_try(pr, ident, kw, encrypt=True)
-        if _ack_ok(ack):
-            print(f"    -> OK en param_enc avec {label}.")
-            return
-    print("    [i] gcode_line reste refuse alors que clean_print_error passe.")
-    print("        -> envoie le journal : c'est specifique a gcode_line.")
+    ec2 = ack2.get("err_code") if ack2 else None
+    print()
+    if ec2 == 84033546:   # 0x0502400A bad signature
+        print("    [DIAGNOSTIC] 0x0502400A 'bad signature' : ce certificat n'est pas")
+        print("    de confiance pour SIGNER sur ce firmware securise (il ne chaine pas")
+        print("    jusqu'a la racine Bambu). Deux solutions :")
+        print("      a) activer le MODE DEVELOPPEUR sur l'imprimante -> l'essai 1 marchera ;")
+        print("      b) fournir la vraie cle Studio partagee : relance avec")
+        print("         --studio-key slicer_key.pem --studio-cert-id slicer_cert_id.txt")
+        print("         (extraite de Bambu Studio, p.ex. via BambuSlicerKeySaver).")
+    elif ec2 == 84033545:
+        print("    [DIAGNOSTIC] 84033545 : signature valide mais cert_id absent du trust")
+        print("    store (reboot l'a vide). Reinstalle le cert (option i) puis reessaie.")
+    else:
+        print("    [i] echec. Envoie le journal (keyforge_connect.log).")
 
 
 def do_gcode(pr, ident, user_id):
@@ -524,6 +562,12 @@ def do_gcode(pr, ident, user_id):
 
 
 def do_install(pr, ident):
+    # En mode Studio sans chaine+CRL fournies, rien a installer : le leaf Studio
+    # est deja de confiance sur l'imprimante (ne pas pousser un cert auto-signe).
+    if ident.get("studio") and not (ident.get("cert_pem") and ident.get("crl_pem")):
+        print("    [i] cle Studio : installation ignoree (le leaf Studio est deja")
+        print("        de confiance ; fournis --studio-cert + --studio-crl pour reinstaller).")
+        return
     print("    ...installation du certificat sur l'imprimante...")
     ok, sec = pr.install(ident)
     if ok:
@@ -542,6 +586,13 @@ def main():
     ap.add_argument("--user-id", default="", help="user_id (optionnel)")
     ap.add_argument("--log", help="fichier journal (defaut : keyforge_connect.log a cote du script)")
     ap.add_argument("--install", action="store_true", help="installer le cert puis ouvrir le menu")
+    ap.add_argument("--studio-key", help="cle privee Studio partagee (slicer_key.pem) "
+                                         "pour signer sur firmware securise")
+    ap.add_argument("--studio-cert", help="cert/chaine Studio (slicer_cert.pem) — sert a "
+                                          "deriver le cert_id et, avec --studio-crl, a (re)installer")
+    ap.add_argument("--studio-cert-id", help="cert_id Studio (slicer_cert_id.txt ou la chaine) "
+                                             "si on ne passe pas --studio-cert")
+    ap.add_argument("--studio-crl", help="CRL Studio (slicer_crl.pem) pour reinstaller la chaine")
     ap.add_argument("--command", help="une seule commande puis quitter "
                                        "(status|light-on|light-off|pause|resume|stop|clear|home)")
     args = ap.parse_args()
@@ -577,6 +628,16 @@ def main():
     ident, pconf = load_identity(bundle)
     print(f"[+] Identite chargee depuis : {bundle}")
     print(f"    cert_id = {ident['cert_id']}")
+
+    # identite Studio partagee (firmware securise) : remplace le cert auto-signe
+    if args.studio_key:
+        try:
+            ident = load_studio_identity(args.studio_key, args.studio_cert,
+                                         args.studio_cert_id, args.studio_crl)
+            print(f"[+] Cle Studio partagee chargee. cert_id = {ident['cert_id']}")
+        except Exception as e:
+            print(f"[!] cle Studio : {e}")
+            sys.exit(1)
 
     # 2. champs de connexion (priorite : argument > bundle > saisie)
     ip = args.ip or pconf.get("ip") or ""
