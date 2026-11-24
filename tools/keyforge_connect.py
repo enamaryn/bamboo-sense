@@ -155,14 +155,14 @@ def sign_print_command(ident, print_obj, user_id):
 
 
 # matrice de sondage quand la signature est refusee (0x0502400A).
-# chaque entree : (libelle, kwargs pour sign_command)
+# chaque entree : (libelle, kwargs sign_command, ajouter_timestamp)
 PROBE_MATRIX = [
-    ("pkcs1 uid=''",     dict(include_uid=True,  user_id="", pad="pkcs1")),
-    ("pkcs1 no-uid",     dict(include_uid=False, user_id="", pad="pkcs1")),
-    ("pss32 uid=''",     dict(include_uid=True,  user_id="", pad="pss", salt_len=32)),
-    ("pss32 no-uid",     dict(include_uid=False, user_id="", pad="pss", salt_len=32)),
-    ("pssMAX uid=''",    dict(include_uid=True,  user_id="", pad="pss", salt_len=None)),
-    ("pkcs1 uid='0'",    dict(include_uid=True,  user_id="0", pad="pkcs1")),
+    ("pkcs1 uid=''",    dict(include_uid=True,  user_id="", pad="pkcs1"), False),
+    ("pkcs1 no-uid",    dict(include_uid=False, user_id="", pad="pkcs1"), False),
+    ("pss32 uid=''",    dict(include_uid=True,  user_id="", pad="pss", salt_len=32), False),
+    ("pkcs1 uid='' +ts", dict(include_uid=True, user_id="", pad="pkcs1"), True),
+    ("pkcs1 no-uid +ts", dict(include_uid=False, user_id="", pad="pkcs1"), True),
+    ("pss32 uid='' +ts", dict(include_uid=True, user_id="", pad="pss", salt_len=32), True),
 ]
 
 
@@ -324,11 +324,14 @@ class Printer:
                                 user_id=user_id, include_uid=include_uid)
 
     def probe_signature(self, ident):
-        """Essaie la matrice (padding x forme) avec clean_print_error (inoffensif).
-        Renvoie [(libelle, kwargs, ack), ...]."""
+        """Essaie la matrice (padding x forme x timestamp) avec clean_print_error
+        (inoffensif). Renvoie [(libelle, kwargs, ack), ...]."""
         results = []
-        for label, kw in PROBE_MATRIX:
-            ack = self.send_signed(ident, "print", {"command": "clean_print_error"}, **kw)
+        for label, kw, add_ts in PROBE_MATRIX:
+            obj = {"command": "clean_print_error"}
+            if add_ts:
+                obj["timestamp"] = int(time.time() * 1000)
+            ack = self.send_signed(ident, "print", obj, **kw)
             logln(f"PROBE {label} -> {json.dumps(ack)}")
             results.append((label, kw, ack))
         return results
