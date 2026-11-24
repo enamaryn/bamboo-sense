@@ -26,11 +26,26 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import json
 import os
 import ssl
 import sys
 import time
+
+# -------- journal de debug (ecrit tout : envois, receptions, ACK, erreurs) ----
+LOG_PATH = None
+
+
+def logln(msg: str):
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    line = f"{stamp}  {msg}"
+    if LOG_PATH:
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
 
 # ---- dependances, avec messages clairs ----
 try:
@@ -158,11 +173,15 @@ class Printer:
 
         def on_connect(c, u, flags, rc, *a):
             c.subscribe(f"device/{self.serial}/report", 0)
+            logln(f"CONNECT rc={rc}  SUB device/{self.serial}/report")
 
         def on_message(c, u, m):
+            raw = m.payload.decode("utf-8", "replace")
+            logln(f"RX  {raw[:4000]}")
             try:
                 d = json.loads(m.payload)
-            except Exception:
+            except Exception as e:
+                logln(f"RX  (json non parse: {e})")
                 return
             if "security" in d:
                 secs.append(d["security"])
@@ -172,9 +191,10 @@ class Printer:
             for top in ("print", "system"):
                 p = d.get(top)
                 if isinstance(p, dict) and ("result" in p or str(p.get("sequence_id", "")).isdigit()):
-                    acks.append({k: p.get(k) for k in
-                                 ("command", "result", "reason", "err_code", "sequence_id")
-                                 if k in p})
+                    a = {k: p.get(k) for k in
+                         ("command", "result", "reason", "err_code", "sequence_id") if k in p}
+                    acks.append(a)
+                    logln(f"ACK {json.dumps(a)}")
 
         # paho 2.x veut une version d'API explicite ; 1.x ne connait pas l'argument
         cid = f"kf-{int(time.time())}"
@@ -190,9 +210,12 @@ class Printer:
         c.username_pw_set("bblp", self.code)
         c.on_connect = on_connect
         c.on_message = on_message
+        logln(f"-- cycle: connect {self.ip}:8883  serial={self.serial}  "
+              f"publishes={len(publishes)}  collect={collect}s")
         try:
             c.connect(self.ip, 8883, keepalive=30)
         except OSError as e:
+            logln(f"ERR connect {self.ip}:8883 -> {e}")
             raise RuntimeError(
                 f"connexion impossible a {self.ip}:8883 ({e}). "
                 "Verifie l'IP, que l'imprimante est allumee et sur le meme reseau, "
@@ -200,7 +223,8 @@ class Printer:
         c.loop_start()
         time.sleep(1.2)
         for pub in publishes:
-            c.publish(f"device/{self.serial}/request", pub)
+            info = c.publish(f"device/{self.serial}/request", pub)
+            logln(f"TX  rc={getattr(info, 'rc', '?')}  {pub[:4000]}")
             time.sleep(0.3)
         time.sleep(collect)
         c.loop_stop()
@@ -211,6 +235,7 @@ class Printer:
         merged = {}
         for r in reports:
             merged.update(r)
+        logln(f"-- cycle fin: reports={len(reports)}  security={len(secs)}  acks={len(acks)}")
         return {"report": merged, "security": secs, "acks": acks,
                 "report_count": len(reports)}
 
@@ -233,6 +258,8 @@ class Printer:
                 v = s.get(field)
                 if isinstance(v, str) and "BEGIN CERTIFICATE" in v:
                     self.printer_cert = v.replace("\\n", "\n")
+                    logln(f"printer_cert capture (champ '{field}', {len(v)} car.)")
+        logln(f"INSTALL ok={ok}  printer_cert={'oui' if self.printer_cert else 'NON'}")
         return ok, out["security"]
 
     def _encrypt_to_printer(self, data: bytes):
@@ -254,6 +281,7 @@ class Printer:
             obj = {"command": "gcode_line", "param_enc": enc}
         else:
             obj = {"command": "gcode_line", "param": line}
+        logln(f"GCODE {line!r}  mode={'param_enc' if enc else 'param'}")
         return self.send_print(ident, obj, user_id), bool(enc)
 
     def send_signed(self, ident, top, obj, user_id):
@@ -414,6 +442,7 @@ def main():
     ap.add_argument("--code", help="code d'acces LAN")
     ap.add_argument("--serial", help="numero de serie de l'imprimante")
     ap.add_argument("--user-id", default="", help="user_id (optionnel)")
+    ap.add_argument("--log", help="fichier journal (defaut : keyforge_connect.log a cote du script)")
     ap.add_argument("--install", action="store_true", help="installer le cert puis ouvrir le menu")
     ap.add_argument("--command", help="une seule commande puis quitter "
                                        "(status|light-on|light-off|pause|resume|stop|clear|home)")
@@ -422,6 +451,24 @@ def main():
     print("=" * 58)
     print("  BambooSense — connexion a l'imprimante (P2S)")
     print("=" * 58)
+
+    # 0. journal de debug
+    global LOG_PATH
+    LOG_PATH = args.log or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "keyforge_connect.log")
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write("\n" + "=" * 70 + "\n")
+        safe_argv = list(sys.argv[1:])
+        for i, a in enumerate(safe_argv):  # ne pas ecrire le code d'acces en clair
+            if a in ("--code", "--user-id") and i + 1 < len(safe_argv):
+                safe_argv[i + 1] = "***"
+        logln(f"SESSION  argv={safe_argv}")
+        print(f"[i] Journal : {LOG_PATH}")
+        print("    (envoie-moi ce fichier pour debugger)")
+    except Exception as e:
+        LOG_PATH = None
+        print(f"[!] impossible d'ecrire le journal : {e}")
 
     # 1. identite
     bundle = find_bundle(args.bundle)
