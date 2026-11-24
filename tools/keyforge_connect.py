@@ -296,13 +296,16 @@ class Printer:
         return self.send_signed(ident, "print", print_obj, user_id)
 
     def light(self, ident, on, user_id):
-        """Lumiere du caisson. Sur firmware verrouille, les commandes non signees
-        sont ignorees : on envoie donc une system.ledctrl SIGNEE et on lit l'ACK."""
+        """Lumiere du caisson (system.ledctrl). Contrairement a print.*, cette
+        commande n'est PAS signee et ne prend PAS de sequence_id : signee, la
+        P2S repond 'json wrong format'. On envoie la forme exacte du firmware
+        et on lit la reponse de l'imprimante (elle echo la commande avec result)."""
         mode = "on" if on else "off"
-        obj = {"command": "ledctrl", "led_node": "chamber_light", "led_mode": mode,
-               "led_on_time": 500, "led_off_time": 500, "loop_times": 0,
-               "interval_time": 0}
-        return self.send_signed(ident, "system", obj, user_id)
+        env = ('{"system":{"command":"ledctrl","led_node":"chamber_light","led_mode":"'
+               + mode + '","led_on_time":500,"led_off_time":500,"loop_times":0,'
+               '"interval_time":0}}')
+        acks = self._cycle([env], collect=3.0)["acks"]
+        return next((a for a in acks if a.get("command") == "ledctrl"), None)
 
     def status(self):
         out = self._cycle(['{"pushing":{"sequence_id":"0","command":"pushall"}}'], collect=4.0)
@@ -385,8 +388,12 @@ def do_cmd(pr, ident, user_id, obj):
 
 
 def do_light(pr, ident, user_id, on):
-    print(f"    ...lumiere {'ON' if on else 'OFF'} (signee)...")
-    _show_ack(pr.light(ident, on, user_id))
+    print(f"    ...lumiere {'ON' if on else 'OFF'}...")
+    ack = pr.light(ident, on, user_id)
+    if ack is None:
+        print("    -> pas de reponse ledctrl (regarde si la lumiere a change ; voir le journal)")
+    else:
+        _show_ack(ack)
 
 
 def do_speed(pr, ident, user_id):
