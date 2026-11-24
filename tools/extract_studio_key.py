@@ -253,10 +253,23 @@ def scan_bytes_for_certs(buf, acc, seen):
 # ===========================================================================
 # Lecture mémoire process (Windows + Linux)
 # ===========================================================================
-def iter_process_regions_windows(pid):
+def _k32():
     import ctypes
     from ctypes import wintypes
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.VirtualQueryEx.restype = ctypes.c_size_t
+    k.VirtualQueryEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+    k.ReadProcessMemory.restype = wintypes.BOOL
+    k.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_char_p,
+                                    ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    return k, ctypes, wintypes
+
+
+def iter_process_regions_windows(pid):
+    k32, ctypes, wintypes = _k32()
     PROCESS_VM_READ = 0x0010
     PROCESS_QUERY_INFORMATION = 0x0400
     h = k32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
@@ -272,30 +285,30 @@ def iter_process_regions_windows(pid):
     MEM_COMMIT = 0x1000
     READABLE = {0x02, 0x04, 0x08, 0x20, 0x40, 0x80}
     PAGE_GUARD = 0x100
-    k32.VirtualQueryEx.restype = ctypes.c_size_t
-    k32.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_char_p,
-                                      ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
     addr = 0
     mbi = MBI()
     max_addr = 0x7FFFFFFF0000
+    total = [0]
     try:
         while addr < max_addr:
             if k32.VirtualQueryEx(h, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi)) == 0:
                 break
             base = mbi.BaseAddress or 0
             size = mbi.RegionSize or 0
-            if (mbi.State == MEM_COMMIT and (mbi.Protect & 0xFF) in READABLE
-                    and not (mbi.Protect & PAGE_GUARD)):
-                yield from _read_region_windows(k32, h, base, size)
-            addr = base + size
             if size == 0:
                 break
+            if (mbi.State == MEM_COMMIT and (mbi.Protect & 0xFF) in READABLE
+                    and not (mbi.Protect & PAGE_GUARD)):
+                for chunk in _read_region_windows(k32, ctypes, h, base, size):
+                    total[0] += len(chunk)
+                    yield chunk
+            addr = base + size
     finally:
         k32.CloseHandle(h)
+    print(f"    ({total[0] // (1024*1024)} Mo lus)")
 
 
-def _read_region_windows(k32, h, base, size, chunk=64 * 1024 * 1024, overlap=4096):
-    import ctypes
+def _read_region_windows(k32, ctypes, h, base, size, chunk=64 * 1024 * 1024, overlap=4096):
     off = 0
     prev_tail = b""
     while off < size:
@@ -344,8 +357,10 @@ def find_bambu_pids():
         import ctypes
         from ctypes import wintypes
         psapi = ctypes.WinDLL("psapi")
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        arr = (wintypes.DWORD * 4096)()
+        k32, _c, _w = _k32()
+        k32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                   wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        arr = (wintypes.DWORD * 8192)()
         got = wintypes.DWORD()
         if not psapi.EnumProcesses(ctypes.byref(arr), ctypes.sizeof(arr), ctypes.byref(got)):
             return pids
@@ -362,8 +377,8 @@ def find_bambu_pids():
                 buf = ctypes.create_unicode_buffer(32768)
                 size = wintypes.DWORD(len(buf))
                 if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
-                    name = buf.value.lower()
-                    if any(hint in os.path.basename(name) for hint in PROC_HINTS):
+                    name = os.path.basename(buf.value.lower())
+                    if any(hint in name for hint in PROC_HINTS):
                         pids.append((pid, buf.value))
             finally:
                 k32.CloseHandle(h)
@@ -415,27 +430,63 @@ def cert_id_of(leaf):
 # ===========================================================================
 # main
 # ===========================================================================
+def find_plugin_files():
+    """Fichiers plugin reseau sur disque a scanner (le blob y est parfois au repos)."""
+    out = []
+    home = os.path.expanduser("~")
+    roots = []
+    for env in ("APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+        v = os.environ.get(env)
+        if v:
+            roots += [os.path.join(v, "BambuStudio"), os.path.join(v, "Bambu Studio")]
+    roots += [os.path.join(home, ".config", "BambuStudio"),
+              os.path.join(home, "Library", "Application Support", "BambuStudio")]
+    for r in roots:
+        for sub in ("", "plugins", os.path.join("plugins", "nightly")):
+            d = os.path.join(r, sub) if sub else r
+            if not os.path.isdir(d):
+                continue
+            try:
+                for f in os.listdir(d):
+                    fl = f.lower()
+                    if any(h in fl for h in ("bambu_networking", "bambusource", "bambu_source",
+                                             "networking", "bambu-net")) \
+                            and fl.endswith((".dll", ".so", ".dylib")):
+                        out.append(os.path.join(d, f))
+            except Exception:
+                pass
+    return out
+
+
 def process_source(args):
     if args.dump:
         print(f"[*] Lecture du dump : {args.dump}")
-        data = Path(args.dump).read_bytes()
-        yield data
+        yield Path(args.dump).read_bytes()
         return
-    pids = find_bambu_pids()
-    if args.pid:
-        pids = [(args.pid, "(--pid)")]
+
+    # 1) fichiers plugin sur disque (rapide, sans Studio lance)
+    for f in find_plugin_files():
+        try:
+            print(f"[*] Scan du plugin sur disque : {f}")
+            yield Path(f).read_bytes()
+        except Exception as e:
+            print(f"    (lecture impossible: {e})")
+
+    # 2) memoire des process Bambu en cours (TOUS)
+    pids = [(args.pid, "(--pid)")] if args.pid else find_bambu_pids()
     if not pids:
-        print("[!] Bambu Studio ne semble pas lance.")
-        print("    Ouvre Bambu Studio, CONNECTE-TOI a ton compte, puis relance ce script.")
-        print("    (ou passe --pid <PID>, ou --dump studio.dmp)")
-        sys.exit(1)
-    pid, name = pids[0]
-    print(f"[*] Process Bambu trouve : PID {pid}  {name}")
-    print("    Lecture de la memoire (ca peut prendre 10-60 s)...")
-    if os.name == "nt":
-        yield from iter_process_regions_windows(pid)
-    else:
-        yield from iter_process_regions_linux(pid)
+        print("[i] Aucun process Bambu en cours (on s'est limite au disque).")
+        return
+    for pid, name in pids:
+        print(f"[*] Process Bambu : PID {pid}  {name}")
+        print("    Lecture de la memoire (10-60 s)...")
+        try:
+            if os.name == "nt":
+                yield from iter_process_regions_windows(pid)
+            else:
+                yield from iter_process_regions_linux(pid)
+        except Exception as e:
+            print(f"    (lecture memoire PID {pid} impossible: {e})")
 
 
 def main():
@@ -459,13 +510,21 @@ def main():
             if key:
                 print("[+] Cle RSA trouvee et reconstruite (sign/verify OK).")
         scan_bytes_for_certs(chunk, certs, seen)
-        # on continue a lire pour collecter les certs meme apres avoir la cle
+
+    print(f"[i] Diagnostic : {len(certs)} certificat(s) vus en memoire/plugin.")
 
     if not key:
-        print("\n[!] Cle introuvable en memoire.")
-        print("    Verifie que Bambu Studio est LANCE et CONNECTE a ton compte")
-        print("    (le plugin reseau doit etre charge). Sous Windows, essaie en")
-        print("    Administrateur. Sinon : procdump -ma bambu-studio.exe studio.dmp")
+        print("\n[!] Blob de cle introuvable.")
+        if certs:
+            print("    (La lecture memoire FONCTIONNE — des certs ont ete vus — mais le")
+            print("     blob de cle n'etait pas present. Il n'est materialise qu'apres")
+            print("     une operation reseau.)")
+            print("    -> Dans Bambu Studio : CONNECTE-toi, ouvre l'onglet 'Appareil'")
+            print("       (Device) de ton imprimante, voire lance une PREPARATION de")
+            print("       print, PUIS relance getkey.bat SANS fermer Studio.")
+        else:
+            print("    La lecture n'a rien ramene. Sous Windows : lance en Administrateur.")
+        print("    Repli fiable : procdump -accepteula -ma bambu-studio.exe studio.dmp")
         print("    puis   python extract_studio_key.py --dump studio.dmp")
         sys.exit(2)
 
