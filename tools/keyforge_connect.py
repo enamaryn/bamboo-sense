@@ -122,21 +122,30 @@ def load_identity(bundle_path):
 # ===========================================================================
 # signature d'une commande print.*  (identique au firmware verifie)
 # ===========================================================================
-def sign_command(ident, top, obj, user_id="", include_uid=True, sort=True):
+def _rsa_sign(key, data, pad="pkcs1", salt_len=32):
+    if pad == "pss":
+        sl = padding.PSS.MAX_LENGTH if salt_len is None else salt_len
+        return key.sign(data, padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                                          salt_length=sl), hashes.SHA256())
+    return key.sign(data, padding.PKCS1v15(), hashes.SHA256())
+
+
+def sign_command(ident, top, obj, user_id="", include_uid=True, sort=True,
+                 pad="pkcs1", salt_len=32, sign_alg="RSA_SHA256"):
     """Signe une commande `<top>.*` et renvoie le JSON complet.
 
-    include_uid / user_id / sort permettent d'essayer plusieurs formes
-    canoniques (le firmware verifie signe avec user_id="" — PRN_UID_DEFAULT —
-    et sequence_id en dernier, donc cles deja triees)."""
+    pad = 'pkcs1' (defaut, schema d'origine) ou 'pss' ; permet de sonder un
+    firmware qui aurait change de padding RSA. include_uid / user_id / sort
+    varient la forme canonique."""
     key = serialization.load_pem_private_key(ident["key_pem"].encode(), None)
     obj_json = json.dumps(obj, sort_keys=sort, separators=(",", ":"))
     inner = '{"' + top + '":' + obj_json
     inner += (',"user_id":"' + user_id + '"}') if include_uid else "}"
     inner_bytes = inner.encode()
-    sig = key.sign(inner_bytes, padding.PKCS1v15(), hashes.SHA256())
+    sig = _rsa_sign(key, inner_bytes, pad=pad, salt_len=salt_len)
     sig_b64 = base64.b64encode(sig).decode()
-    header = (',"header":{"sign_ver":"v1.0","sign_alg":"RSA_SHA256","sign_string":"'
-              + sig_b64 + '","cert_id":"' + ident["cert_id"]
+    header = (',"header":{"sign_ver":"v1.0","sign_alg":"' + sign_alg
+              + '","sign_string":"' + sig_b64 + '","cert_id":"' + ident["cert_id"]
               + '","payload_len":' + str(len(inner_bytes)) + "}")
     return inner[:-1] + header + "}"
 
@@ -145,12 +154,15 @@ def sign_print_command(ident, print_obj, user_id):
     return sign_command(ident, "print", print_obj, user_id)
 
 
-# formes canoniques a essayer quand la signature est refusee (0x0502400A).
-# chaque entree : (libelle, include_uid, user_id)
-UID_VARIANTS = [
-    ("user_id=''", True, ""),
-    ("user_id='0'", True, "0"),
-    ("sans user_id", False, ""),
+# matrice de sondage quand la signature est refusee (0x0502400A).
+# chaque entree : (libelle, kwargs pour sign_command)
+PROBE_MATRIX = [
+    ("pkcs1 uid=''",     dict(include_uid=True,  user_id="", pad="pkcs1")),
+    ("pkcs1 no-uid",     dict(include_uid=False, user_id="", pad="pkcs1")),
+    ("pss32 uid=''",     dict(include_uid=True,  user_id="", pad="pss", salt_len=32)),
+    ("pss32 no-uid",     dict(include_uid=False, user_id="", pad="pss", salt_len=32)),
+    ("pssMAX uid=''",    dict(include_uid=True,  user_id="", pad="pss", salt_len=None)),
+    ("pkcs1 uid='0'",    dict(include_uid=True,  user_id="0", pad="pkcs1")),
 ]
 
 
@@ -278,17 +290,16 @@ class Printer:
         ct = cert.public_key().encrypt(data, padding.PKCS1v15())
         return base64.b64encode(ct).decode()
 
-    def gcode(self, ident, line, user_id="", encrypt=False, include_uid=True):
+    def gcode(self, ident, line, encrypt=False, **sign_kw):
         """Envoie une ligne de G-code signee.
-        encrypt=False : param en CLAIR (comme project_file accepte une url en
-                        clair — le chiffrement _enc s'est revele optionnel).
-        encrypt=True  : param_enc, chiffre vers la cle publique de l'imprimante."""
+        encrypt=False : param en CLAIR (project_file accepte bien une url en clair).
+        encrypt=True  : param_enc, chiffre vers la cle publique de l'imprimante.
+        sign_kw : options de signature (user_id, include_uid, pad, salt_len...)."""
         if not line.endswith("\n"):
             line += "\n"
         if encrypt:
             enc = self._encrypt_to_printer(line.encode())
             if not enc:
-                logln("GCODE encrypt demande mais pas de printer_cert -> clair")
                 obj = {"command": "gcode_line", "param": line}
                 mode = "param(clair, faute de cle)"
             else:
@@ -297,29 +308,29 @@ class Printer:
         else:
             obj = {"command": "gcode_line", "param": line}
             mode = "param(clair)"
-        logln(f"GCODE {line!r}  mode={mode}  include_uid={include_uid} uid={user_id!r}")
-        return self.send_print(ident, obj, user_id, include_uid=include_uid), mode
+        logln(f"GCODE {line!r}  mode={mode}  sign_kw={sign_kw}")
+        return self.send_signed(ident, "print", obj, **sign_kw), mode
 
-    def send_signed(self, ident, top, obj, user_id="", include_uid=True, sort=True):
+    def send_signed(self, ident, top, obj, **kw):
         seq = self.next_seq()
         o = {"sequence_id": seq, **obj}
-        wire = sign_command(ident, top, o, user_id, include_uid=include_uid, sort=sort)
+        wire = sign_command(ident, top, o, **kw)
         out = self._cycle([wire], collect=5.0)
         ack = next((a for a in out["acks"] if str(a.get("sequence_id")) == str(seq)), None)
         return ack or (out["acks"][-1] if out["acks"] else None)
 
     def send_print(self, ident, print_obj, user_id="", include_uid=True):
-        return self.send_signed(ident, "print", print_obj, user_id, include_uid=include_uid)
+        return self.send_signed(ident, "print", print_obj,
+                                user_id=user_id, include_uid=include_uid)
 
     def probe_signature(self, ident):
-        """Essaie plusieurs formes canoniques avec clean_print_error (inoffensif)
-        et renvoie [(libelle, include_uid, user_id, ack), ...]."""
+        """Essaie la matrice (padding x forme) avec clean_print_error (inoffensif).
+        Renvoie [(libelle, kwargs, ack), ...]."""
         results = []
-        for label, inc, uid in UID_VARIANTS:
-            ack = self.send_signed(ident, "print", {"command": "clean_print_error"},
-                                   user_id=uid, include_uid=inc)
+        for label, kw in PROBE_MATRIX:
+            ack = self.send_signed(ident, "print", {"command": "clean_print_error"}, **kw)
             logln(f"PROBE {label} -> {json.dumps(ack)}")
-            results.append((label, inc, uid, ack))
+            results.append((label, kw, ack))
         return results
 
     def light(self, ident, on, user_id):
@@ -448,44 +459,45 @@ def _fmt(ack):
     return f"{r}{extra}{ec}"
 
 
-def _home_try(pr, ident, user_id, include_uid, encrypt):
-    ack, mode = pr.gcode(ident, "G28", user_id, encrypt=encrypt, include_uid=include_uid)
+def _home_try(pr, ident, sign_kw, encrypt=False):
+    ack, mode = pr.gcode(ident, "G28", encrypt=encrypt, **sign_kw)
     print(f"    [{mode}] -> {_fmt(ack)}")
     return ack
 
 
 def do_home(pr, ident, user_id):
     print("    ...HOMING (G28), param clair signe...")
-    ack = _home_try(pr, ident, user_id, include_uid=True, encrypt=False)
+    ack = _home_try(pr, ident, dict(user_id=user_id, include_uid=True))
     if _ack_ok(ack):
         print("    -> OK : les axes doivent bouger.")
         return
 
-    # La signature est refusee -> sonder la bonne forme canonique
-    print("    signature refusee. Sonde des formes de signature (clean_print_error)...")
+    # Signature refusee -> sonder padding x forme (clean_print_error, inoffensif)
+    print("    signature refusee. Sonde padding x forme (clean_print_error)...")
     winner = None
-    for label, inc, uid, pack in pr.probe_signature(ident):
-        print(f"      {label:16s} -> {_fmt(pack)}")
+    for label, kw, pack in pr.probe_signature(ident):
+        print(f"      {label:14s} -> {_fmt(pack)}")
         if winner is None and _ack_ok(pack):
-            winner = (label, inc, uid)
+            winner = (label, kw)
 
     if not winner:
-        print("    [i] aucune forme acceptee. Envoie-moi le journal (keyforge_connect.log).")
+        print("    [i] aucune forme acceptee (toujours 0x0502400A).")
+        print("        Envoie le journal : le firmware a probablement change de schema.")
         return
 
-    label, inc, uid = winner
-    print(f"    forme acceptee : {label}. Nouvel essai du homing avec cette forme...")
-    ack = _home_try(pr, ident, uid, include_uid=inc, encrypt=False)
+    label, kw = winner
+    print(f"    forme acceptee : {label}. Nouvel essai du homing...")
+    ack = _home_try(pr, ident, kw, encrypt=False)
     if _ack_ok(ack):
         print(f"    -> OK avec {label} : les axes doivent bouger.")
         return
     if pr.printer_cert:
         print("    (clair refuse — essai param_enc avec la forme acceptee)")
-        ack = _home_try(pr, ident, uid, include_uid=inc, encrypt=True)
+        ack = _home_try(pr, ident, kw, encrypt=True)
         if _ack_ok(ack):
             print(f"    -> OK en param_enc avec {label}.")
             return
-    print("    [i] le G-code reste refuse meme avec une signature acceptee ailleurs.")
+    print("    [i] gcode_line reste refuse alors que clean_print_error passe.")
     print("        -> envoie le journal : c'est specifique a gcode_line.")
 
 
@@ -494,7 +506,7 @@ def do_gcode(pr, ident, user_id):
     if not line:
         return
     enc = ask("    chiffrer param_enc ? (o/N)", "n").lower().startswith("o")
-    ack, mode = pr.gcode(ident, line, user_id, encrypt=enc)
+    ack, mode = pr.gcode(ident, line, encrypt=enc, user_id=user_id)
     print(f"    mode : {mode}")
     if ack:
         print(f"    -> {ack.get('result','?')}" + (f" ({ack['reason']})" if ack.get("reason") else "")
