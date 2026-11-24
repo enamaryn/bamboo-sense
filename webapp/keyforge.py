@@ -168,8 +168,10 @@ def sign_print_command(identity: Identity, print_obj: dict, user_id: str) -> str
     """
     key = serialization.load_pem_private_key(identity.key_pem.encode(), None)
 
-    # compact, insertion-order json for just the print object
-    print_json = json.dumps(print_obj, separators=(",", ":"))
+    # The printer re-canonicalises with SORTED keys before verifying the
+    # signature (err 0x0502400A "wrong canonical form" otherwise). The commands
+    # verified early on happened to have alphabetical keys, which hid this.
+    print_json = json.dumps(print_obj, sort_keys=True, separators=(",", ":"))
     inner = '{"print":' + print_json + ',"user_id":"' + user_id + '"}'
     inner_bytes = inner.encode()
 

@@ -107,10 +107,17 @@ def load_identity(bundle_path):
 # ===========================================================================
 # signature d'une commande print.*  (identique au firmware verifie)
 # ===========================================================================
-def sign_print_command(ident, print_obj, user_id):
+def sign_command(ident, top, obj, user_id):
+    """Signe une commande `<top>.*` (print ou system) et renvoie le JSON complet.
+
+    L'imprimante RECANONICALISE en CLES TRIEES avant de verifier la signature.
+    Les commandes deja validees (pause/print_speed) avaient leurs cles deja dans
+    l'ordre alphabetique, ce qui masquait le probleme : l'erreur 0x0502400A
+    ("wrong canonical form") apparait des qu'une cle sort de cet ordre.
+    """
     key = serialization.load_pem_private_key(ident["key_pem"].encode(), None)
-    print_json = json.dumps(print_obj, separators=(",", ":"))
-    inner = '{"print":' + print_json + ',"user_id":"' + user_id + '"}'
+    obj_json = json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    inner = '{"' + top + '":' + obj_json + ',"user_id":"' + user_id + '"}'
     inner_bytes = inner.encode()
     sig = key.sign(inner_bytes, padding.PKCS1v15(), hashes.SHA256())
     sig_b64 = base64.b64encode(sig).decode()
@@ -118,6 +125,10 @@ def sign_print_command(ident, print_obj, user_id):
               + sig_b64 + '","cert_id":"' + ident["cert_id"]
               + '","payload_len":' + str(len(inner_bytes)) + "}")
     return inner[:-1] + header + "}"
+
+
+def sign_print_command(ident, print_obj, user_id):
+    return sign_command(ident, "print", print_obj, user_id)
 
 
 def build_cert_install(ident, seq, ts_ms):
@@ -157,8 +168,10 @@ class Printer:
                 secs.append(d["security"])
             if "print" in d:
                 reports.append(d["print"])
-                p = d["print"]
-                if "result" in p or str(p.get("sequence_id", "")).isdigit():
+            # un ACK peut arriver sous "print" OU "system" selon la commande
+            for top in ("print", "system"):
+                p = d.get(top)
+                if isinstance(p, dict) and ("result" in p or str(p.get("sequence_id", "")).isdigit()):
                     acks.append({k: p.get(k) for k in
                                  ("command", "result", "reason", "err_code", "sequence_id")
                                  if k in p})
@@ -243,20 +256,25 @@ class Printer:
             obj = {"command": "gcode_line", "param": line}
         return self.send_print(ident, obj, user_id), bool(enc)
 
-    def send_print(self, ident, print_obj, user_id):
+    def send_signed(self, ident, top, obj, user_id):
         seq = self.next_seq()
-        po = {"sequence_id": seq, **print_obj}
-        wire = sign_print_command(ident, po, user_id or "0")
+        o = {"sequence_id": seq, **obj}
+        wire = sign_command(ident, top, o, user_id or "0")
         out = self._cycle([wire], collect=5.0)
         ack = next((a for a in out["acks"] if str(a.get("sequence_id")) == str(seq)), None)
         return ack or (out["acks"][-1] if out["acks"] else None)
 
-    def light(self, on):
+    def send_print(self, ident, print_obj, user_id):
+        return self.send_signed(ident, "print", print_obj, user_id)
+
+    def light(self, ident, on, user_id):
+        """Lumiere du caisson. Sur firmware verrouille, les commandes non signees
+        sont ignorees : on envoie donc une system.ledctrl SIGNEE et on lit l'ACK."""
         mode = "on" if on else "off"
-        env = ('{"system":{"command":"ledctrl","led_node":"chamber_light","led_mode":"'
-               + mode + '","led_on_time":500,"led_off_time":500,"loop_times":0,'
-               '"interval_time":0}}')
-        self._cycle([env], collect=2.0)
+        obj = {"command": "ledctrl", "led_node": "chamber_light", "led_mode": mode,
+               "led_on_time": 500, "led_off_time": 500, "loop_times": 0,
+               "interval_time": 0}
+        return self.send_signed(ident, "system", obj, user_id)
 
     def status(self):
         out = self._cycle(['{"pushing":{"sequence_id":"0","command":"pushall"}}'], collect=4.0)
@@ -278,8 +296,8 @@ def ask(prompt, default=""):
 def menu(pr, ident, user_id):
     actions = {
         "1": ("Statut",         lambda: do_status(pr)),
-        "2": ("Lumiere ON",     lambda: (pr.light(True), print("    -> lumiere allumee"))),
-        "3": ("Lumiere OFF",    lambda: (pr.light(False), print("    -> lumiere eteinte"))),
+        "2": ("Lumiere ON",     lambda: do_light(pr, ident, user_id, True)),
+        "3": ("Lumiere OFF",    lambda: do_light(pr, ident, user_id, False)),
         "4": ("Pause",          lambda: do_cmd(pr, ident, user_id, {"command": "pause"})),
         "5": ("Reprise",        lambda: do_cmd(pr, ident, user_id, {"command": "resume"})),
         "6": ("Stop",           lambda: do_cmd(pr, ident, user_id, {"command": "stop"})),
@@ -323,15 +341,24 @@ def do_status(pr):
         print(f"    print_error : {s['print_error']}")
 
 
+def _show_ack(ack):
+    if not ack:
+        print("    [!] aucun accuse de reception (ACK) — commande probablement ignoree")
+        return
+    r = ack.get("result", "?")
+    extra = f" ({ack.get('reason')})" if ack.get("reason") else ""
+    ec = f"  err_code={ack.get('err_code')}" if ack.get("err_code") else ""
+    print(f"    -> {r}{extra}{ec}")
+
+
 def do_cmd(pr, ident, user_id, obj):
     print(f"    ...envoi {obj['command']}...")
-    ack = pr.send_print(ident, obj, user_id)
-    if not ack:
-        print("    [!] aucun accuse de reception (ACK)")
-    else:
-        r = ack.get("result", "?")
-        extra = f" ({ack.get('reason')})" if ack.get("reason") else ""
-        print(f"    -> {r}{extra}")
+    _show_ack(pr.send_print(ident, obj, user_id))
+
+
+def do_light(pr, ident, user_id, on):
+    print(f"    ...lumiere {'ON' if on else 'OFF'} (signee)...")
+    _show_ack(pr.light(ident, on, user_id))
 
 
 def do_speed(pr, ident, user_id):
@@ -427,8 +454,8 @@ def main():
     # 3. commande unique ?
     if args.command:
         cmap = {"status": lambda: do_status(pr),
-                "light-on": lambda: pr.light(True),
-                "light-off": lambda: pr.light(False),
+                "light-on": lambda: do_light(pr, ident, user_id, True),
+                "light-off": lambda: do_light(pr, ident, user_id, False),
                 "pause": lambda: do_cmd(pr, ident, user_id, {"command": "pause"}),
                 "resume": lambda: do_cmd(pr, ident, user_id, {"command": "resume"}),
                 "stop": lambda: do_cmd(pr, ident, user_id, {"command": "stop"}),

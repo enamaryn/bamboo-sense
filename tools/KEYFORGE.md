@@ -61,8 +61,20 @@ C'est pour ça que `--command home` fait toujours l'installation d'abord.
 
 Les commandes `pause / resume / stop / print_speed / clean_print_error` sont
 vérifiées sur matériel (voir `../docs/CRACK.md`). Le `gcode_line` + `param_enc`
-suit la piste documentée mais reste la brique la moins éprouvée : si l'ACK n'est
-pas `SUCCESS`, note l'`err_code` renvoyé — c'est ce qui permet d'ajuster.
+suit la piste documentée : si l'ACK n'est pas `SUCCESS`, note l'`err_code`.
+
+### Forme canonique (clés triées)
+
+L'imprimante recanonicalise la commande en **clés triées** avant de vérifier la
+signature. Les scripts signent donc en `sort_keys` : une commande dont les clés
+ne sont pas déjà dans l'ordre alphabétique (comme `gcode_line`) renvoyait sinon
+`err_code=84033546` (`0x0502400A`, « wrong canonical form »).
+
+### Lumière et commandes `system`
+
+Sur le firmware verrouillé, les commandes non signées sont **ignorées sans
+erreur**. La lumière (`system.ledctrl`) est donc elle aussi **signée**, et le
+script affiche l'ACK réel au lieu de supposer que ça a marché.
 
 ## Sécurité
 
