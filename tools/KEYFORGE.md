@@ -90,18 +90,26 @@ plus simple pour piloter en local.
 
 **B) Signer avec le certificat Studio partagé de Bambu.** Même clé pour tous,
 intégrée dans Bambu Studio, et le leaf correspondant est déjà de confiance sur
-l'imprimante. On l'extrait de son installation Studio (p.ex.
-[BambuSlicerKeySaver](https://github.com/danielwoz/BambuSlicerKeySaver)) qui
-produit `slicer_key.pem` + `slicer_cert.pem` (+ `slicer_cert_id.txt`), puis :
+l'imprimante.
 
+1. **Extraire la clé** une fois avec
+   [BambuSlicerKeySaver](https://github.com/danielwoz/BambuSlicerKeySaver) : il
+   écrit `slicer_key.pem` dans le dossier config de Bambu Studio
+   (⚠️ testé surtout sous Linux). Le certificat assorti est livré avec Bambu
+   Studio (`resources/cert/slicer_base64.cer`).
+2. **Lancer `connect.bat`** : il **détecte automatiquement** `slicer_key.pem`
+   et le cert Studio dans les emplacements habituels (dossier config + dossier
+   d'installation de Studio), **dérive le `cert_id`**, **(ré)installe le leaf
+   réel** avec la CRL GLOF du firmware (pour garantir la confiance), puis
+   **signe** avec la clé Studio. Rien d'autre à taper.
+
+Chemins non standard ? Précise-les :
 ```bat
-python keyforge_connect.py --studio-key slicer_key.pem --studio-cert slicer_cert.pem
+python keyforge_connect.py --studio-key slicer_key.pem --studio-cert slicer_base64.cer
+python keyforge_connect.py --studio-dir "C:\chemin\vers\BambuStudio"
 ```
-
-Le script dérive le `cert_id` du cert, signe avec la clé Studio (enveloppe
-header-first), et l'imprimante accepte — sans activer le Mode Développeur.
-Après un reboot le trust store est vidé : ajoute `--studio-crl slicer_crl.pem`
-pour réinstaller la chaîne.
+`--no-auto-studio` désactive la détection automatique. Le script vérifie que la
+clé et le cert correspondent (même modulus) et prévient sinon.
 
 > Référence du schéma : `ClusterM/open-bamboo-networking` §10.1–10.4, §10.2
 > (où vivent les secrets Studio).

@@ -121,26 +121,115 @@ def load_identity(bundle_path):
     return ident, printer
 
 
+# CRL GLOF codee en dur dans le firmware (issuer CN=GLOF3813734089.bambulab.com).
+# Sert a (re)installer un leaf Studio reel : issuer(leaf)==issuer(crl)==GLOF... .
+BAKED_GLOF_CRL = (
+    "-----BEGIN X509 CRL-----\n"
+    "MIIB6jCB0wIBATANBgkqhkiG9w0BAQsFADAmMSQwIgYDVQQDDBtHTE9GMzgxMzcz\n"
+    "NDA4OS5iYW1idWxhYi5jb20XDTI0MTIyODAzNDkyMloXDTI1MDEyODA0NDkyMlow\n"
+    "SDAiAhEAwKnG9y7waEObyjeMvq6AsRcNMjQxMjIwMDczODQ0WjAiAhEA8Nae8vkm\n"
+    "xTtjKidwSnzKexcNMjQxMjE5MDgwMjQ1WqAvMC0wHwYDVR0jBBgwFoAUwsnRLS7p\n"
+    "ktqZJwMZozos0xysCJswCgYDVR0UBAMCAXswDQYJKoZIhvcNAQELBQADggEBAIV+\n"
+    "jSqHblK7ZEH6eb8T7zFsFBPTrr4DKmwcBarCq9OLUtN/FSCcGXnVP6dWU06+RhE0\n"
+    "mSwh6ER6LDQEupYXpOerZPE0zQOa5q/CsfTAtpBndMsKM9jKFTh0+Gr7V46fkuM\n"
+    "kJ7UeO17FddDtfCDqxIvheo/RPvZPoiNuCpUQuGAI59O3kFqNkv6VsZlk+7E/D1Q\n"
+    "aSiKr+bk6+hWslSLtenA4rxZNcL8cq7AYijLPlE2HTN6ASCMx/bBZXzm28KHDyeR\n"
+    "FtfnJsmWXBbeOqHmR9/JpSbJdXRD6jvXF2nQVgQcAqv3DZcOhov0ah+31foAe2/e\n"
+    "aRANWl5wMJ5nUd5UFCk=\n"
+    "-----END X509 CRL-----\n"
+)
+
+
 def cert_id_from_pem(cert_pem):
     """cert_id = serial(hex minuscule) + issuer(RFC4514), depuis le leaf (1er cert)."""
     c = x509.load_pem_x509_certificate(cert_pem.encode())
     return format(c.serial_number, "x") + c.issuer.rfc4514_string()
 
 
-def load_studio_identity(key_path, cert_path=None, cert_id=None, crl_path=None):
+def _read_cert_flexible(path):
+    """Lit un cert en PEM, ou en base64 de DER (slicer_base64.cer de Studio)."""
+    from pathlib import Path as _P
+    raw = _P(path).read_text(errors="ignore").strip()
+    if "BEGIN CERTIFICATE" in raw:
+        return raw if raw.endswith("\n") else raw + "\n"
+    der = base64.b64decode("".join(raw.split()))
+    c = x509.load_der_x509_certificate(der)
+    return c.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def find_studio_material(studio_dir=None):
+    """Cherche la cle Studio (slicer_key.pem) + le cert Studio produits par
+    BambuSlicerKeySaver / livres avec Bambu Studio. Renvoie (key_path, cert_pem)."""
+    home = os.path.expanduser("~")
+    dirs = []
+    if studio_dir:
+        dirs.append(studio_dir)
+    for env in ("APPDATA", "LOCALAPPDATA", "USERPROFILE", "PROGRAMFILES",
+                "PROGRAMFILES(X86)"):
+        v = os.environ.get(env)
+        if v:
+            dirs += [os.path.join(v, "BambuStudio"), v]
+    dirs += [os.path.join(home, ".config", "BambuStudio"),
+             os.path.join(home, "Library", "Application Support", "BambuStudio"),
+             home, "."]
+    key_path = None
+    for d in dirs:
+        p = os.path.join(d, "slicer_key.pem")
+        if os.path.isfile(p):
+            key_path = p
+            break
+    cert_pem = None
+    cert_names = ["slicer_cert.pem", "slicer.pem",
+                  os.path.join("cert", "slicer_base64.cer"),
+                  os.path.join("resources", "cert", "slicer_base64.cer"),
+                  "slicer_base64.cer"]
+    for d in dirs:
+        for n in cert_names:
+            p = os.path.join(d, n)
+            if os.path.isfile(p):
+                try:
+                    cert_pem = _read_cert_flexible(p)
+                    break
+                except Exception:
+                    pass
+        if cert_pem:
+            break
+    return key_path, cert_pem
+
+
+def load_studio_identity(key_path, cert_path=None, cert_id=None, crl_path=None,
+                         cert_pem=None):
     """Construit une identite de signature a partir de la cle Studio partagee.
-    Suffit pour SIGNER (le leaf Studio est deja de confiance sur l'imprimante) ;
-    avec cert+crl on peut aussi reinstaller la chaine apres un reboot."""
+    Le leaf Studio etant reel (emis par GLOF3813734089), on peut le (re)installer
+    avec la CRL GLOF du firmware pour garantir qu'il est de confiance, puis signer."""
     from pathlib import Path as _P
     key_pem = _P(key_path).read_text()
-    cert_pem = _P(cert_path).read_text() if cert_path else ""
+    if cert_pem is None:
+        cert_pem = _read_cert_flexible(cert_path) if cert_path else ""
     if cert_id and os.path.isfile(cert_id):
         cert_id = _P(cert_id).read_text().strip()
     if not cert_id:
         if not cert_pem:
             raise RuntimeError("fournis --studio-cert ou --studio-cert-id avec --studio-key")
         cert_id = cert_id_from_pem(cert_pem)
-    crl_pem = _P(crl_path).read_text() if crl_path else ""
+    # verif : la cle correspond-elle bien au cert ? (meme modulus RSA)
+    if cert_pem:
+        try:
+            kpub = serialization.load_pem_private_key(key_pem.encode(), None).public_key()
+            cpub = x509.load_pem_x509_certificate(cert_pem.encode()).public_key()
+            if kpub.public_numbers().n != cpub.public_numbers().n:
+                print("    [!] ATTENTION : la cle Studio et le cert ne correspondent PAS")
+                print("        (modulus different -> versions differentes de Studio ?).")
+                print("        La signature sera refusee. Fournis un cert assorti a la cle.")
+        except Exception:
+            pass
+    # CRL : fournie, sinon la CRL GLOF du firmware si le leaf est emis par GLOF...
+    if crl_path:
+        crl_pem = _P(crl_path).read_text()
+    elif cert_pem and "GLOF3813734089" in cert_id:
+        crl_pem = BAKED_GLOF_CRL
+    else:
+        crl_pem = ""
     return {"key_pem": key_pem, "cert_pem": cert_pem, "crl_pem": crl_pem,
             "cert_id": cert_id, "cn": "studio-app", "serial_hex": "",
             "serial": "studio", "created": "", "studio": True}
@@ -593,6 +682,9 @@ def main():
     ap.add_argument("--studio-cert-id", help="cert_id Studio (slicer_cert_id.txt ou la chaine) "
                                              "si on ne passe pas --studio-cert")
     ap.add_argument("--studio-crl", help="CRL Studio (slicer_crl.pem) pour reinstaller la chaine")
+    ap.add_argument("--studio-dir", help="dossier ou chercher slicer_key.pem + cert Studio")
+    ap.add_argument("--no-auto-studio", action="store_true",
+                    help="ne pas auto-detecter la cle Studio (slicer_key.pem)")
     ap.add_argument("--command", help="une seule commande puis quitter "
                                        "(status|light-on|light-off|pause|resume|stop|clear|home)")
     args = ap.parse_args()
@@ -629,12 +721,24 @@ def main():
     print(f"[+] Identite chargee depuis : {bundle}")
     print(f"    cert_id = {ident['cert_id']}")
 
-    # identite Studio partagee (firmware securise) : remplace le cert auto-signe
-    if args.studio_key:
+    # identite Studio partagee (firmware securise) : remplace le cert auto-signe.
+    # 1) flags explicites ; 2) sinon auto-detection de slicer_key.pem (BambuSlicerKeySaver).
+    studio_key = args.studio_key
+    studio_cert_pem = None
+    if not studio_key and not args.no_auto_studio:
+        k, cpem = find_studio_material(args.studio_dir)
+        if k:
+            studio_key = k
+            studio_cert_pem = cpem
+            print(f"[+] Cle Studio auto-detectee : {k}")
+            if not cpem and not args.studio_cert and not args.studio_cert_id:
+                print("    [!] cert Studio introuvable -> passe --studio-cert slicer_cert.pem")
+    if studio_key:
         try:
-            ident = load_studio_identity(args.studio_key, args.studio_cert,
-                                         args.studio_cert_id, args.studio_crl)
-            print(f"[+] Cle Studio partagee chargee. cert_id = {ident['cert_id']}")
+            ident = load_studio_identity(studio_key, args.studio_cert,
+                                         args.studio_cert_id, args.studio_crl,
+                                         cert_pem=studio_cert_pem)
+            print(f"[+] Signature via cle Studio partagee. cert_id = {ident['cert_id']}")
         except Exception as e:
             print(f"[!] cle Studio : {e}")
             sys.exit(1)
