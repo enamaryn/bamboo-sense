@@ -270,19 +270,27 @@ class Printer:
         ct = cert.public_key().encrypt(data, padding.PKCS1v15())
         return base64.b64encode(ct).decode()
 
-    def gcode(self, ident, line, user_id):
-        """Envoie une ligne de G-code signee. Si on a la cle de l'imprimante,
-        le parametre est chiffre (param_enc) comme l'exige le firmware verrouille ;
-        sinon on tente en clair (param)."""
+    def gcode(self, ident, line, user_id, encrypt=False):
+        """Envoie une ligne de G-code signee.
+        encrypt=False : param en CLAIR (comme project_file accepte une url en
+                        clair — le chiffrement _enc s'est revele optionnel).
+        encrypt=True  : param_enc, chiffre vers la cle publique de l'imprimante."""
         if not line.endswith("\n"):
             line += "\n"
-        enc = self._encrypt_to_printer(line.encode())
-        if enc:
-            obj = {"command": "gcode_line", "param_enc": enc}
+        if encrypt:
+            enc = self._encrypt_to_printer(line.encode())
+            if not enc:
+                logln("GCODE encrypt demande mais pas de printer_cert -> clair")
+                obj = {"command": "gcode_line", "param": line}
+                mode = "param(clair, faute de cle)"
+            else:
+                obj = {"command": "gcode_line", "param_enc": enc}
+                mode = "param_enc(chiffre)"
         else:
             obj = {"command": "gcode_line", "param": line}
-        logln(f"GCODE {line!r}  mode={'param_enc' if enc else 'param'}")
-        return self.send_print(ident, obj, user_id), bool(enc)
+            mode = "param(clair)"
+        logln(f"GCODE {line!r}  mode={mode}")
+        return self.send_print(ident, obj, user_id), mode
 
     def send_signed(self, ident, top, obj, user_id):
         seq = self.next_seq()
@@ -403,32 +411,46 @@ def do_speed(pr, ident, user_id):
     do_cmd(pr, ident, user_id, {"command": "print_speed", "param": v})
 
 
-def do_home(pr, ident, user_id):
-    print("    ...envoi du HOMING (G28)...")
-    if not pr.printer_cert:
-        print("    [i] cle publique de l'imprimante inconnue -> installe d'abord le")
-        print("        certificat (option i). Tentative en clair quand meme.")
-    ack, enc = pr.gcode(ident, "G28", user_id)
-    print(f"    mode : {'param_enc (chiffre)' if enc else 'param (clair)'}")
+def _home_try(pr, ident, user_id, encrypt):
+    ack, mode = pr.gcode(ident, "G28", user_id, encrypt=encrypt)
+    print(f"    [{mode}]", end=" ")
     if not ack:
-        print("    [!] aucun ACK — commande probablement refusee.")
-    else:
-        r = ack.get("result", "?")
-        extra = f" ({ack.get('reason')})" if ack.get("reason") else ""
-        ec = f"  err_code={ack.get('err_code')}" if ack.get("err_code") else ""
-        print(f"    -> {r}{extra}{ec}")
-        if r == "SUCCESS":
-            print("    L'imprimante devrait lancer son homing (les axes bougent).")
+        print("aucun ACK")
+        return None
+    r = (ack.get("result") or "?")
+    extra = f" ({ack.get('reason')})" if ack.get("reason") else ""
+    ec = f"  err_code={ack.get('err_code')}" if ack.get("err_code") else ""
+    print(f"-> {r}{extra}{ec}")
+    return str(r).lower()
+
+
+def do_home(pr, ident, user_id):
+    print("    ...HOMING (G28)...")
+    # 1) param EN CLAIR signe — teste directement la signature externe
+    r1 = _home_try(pr, ident, user_id, encrypt=False)
+    if r1 == "success":
+        print("    -> SUCCESS : les axes doivent bouger. (param clair suffit)")
+        return
+    # 2) repli chiffre si on a la cle de l'imprimante
+    if pr.printer_cert:
+        print("    (clair refuse — essai chiffre param_enc)")
+        r2 = _home_try(pr, ident, user_id, encrypt=True)
+        if r2 == "success":
+            print("    -> SUCCESS en param_enc : les axes doivent bouger.")
+            return
+    print("    [i] echec : note les deux lignes ci-dessus + envoie le journal.")
 
 
 def do_gcode(pr, ident, user_id):
     line = ask("    ligne G-code (ex. G28 / G1 Z10 F600)")
     if not line:
         return
-    ack, enc = pr.gcode(ident, line, user_id)
-    print(f"    mode : {'param_enc' if enc else 'param'}")
+    enc = ask("    chiffrer param_enc ? (o/N)", "n").lower().startswith("o")
+    ack, mode = pr.gcode(ident, line, user_id, encrypt=enc)
+    print(f"    mode : {mode}")
     if ack:
-        print(f"    -> {ack.get('result','?')}" + (f" ({ack['reason']})" if ack.get("reason") else ""))
+        print(f"    -> {ack.get('result','?')}" + (f" ({ack['reason']})" if ack.get("reason") else "")
+              + (f"  err_code={ack['err_code']}" if ack.get("err_code") else ""))
     else:
         print("    [!] aucun ACK")
 
