@@ -51,7 +51,9 @@ def logln(msg: str):
 try:
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.x509.oid import NameOID
+    import datetime as _dt
 except ImportError:
     print("\n[!] Il manque 'cryptography'.  Tape :  pip install cryptography\n")
     sys.exit(1)
@@ -130,39 +132,42 @@ def _rsa_sign(key, data, pad="pkcs1", salt_len=32):
     return key.sign(data, padding.PKCS1v15(), hashes.SHA256())
 
 
-def sign_command(ident, top, obj, user_id="", include_uid=True, sort=True,
-                 pad="pkcs1", salt_len=32, sign_alg="RSA_SHA256"):
-    """Signe une commande `<top>.*` et renvoie le JSON complet.
+def sign_command(ident, top, obj, pad="pkcs1", salt_len=32, sign_alg="RSA_SHA256",
+                 **_ignore):
+    """Signe une commande `<top>.*` selon le schema verifie sur materiel
+    (ClusterM/open-bamboo-networking §10.4) :
 
-    pad = 'pkcs1' (defaut, schema d'origine) ou 'pss' ; permet de sonder un
-    firmware qui aurait change de padding RSA. include_uid / user_id / sort
-    varient la forme canonique."""
+      - on signe EXACTEMENT les octets   {"<top>":<valeur>}   (sans user_id,
+        sans rien d'autre) ;
+      - le `header` est place EN PREMIER dans l'enveloppe :
+        {"header":{...},"<top>":<valeur>} ;
+      - cert_id = serial(hex, minuscule) + issuer(RFC4514, p.ex. CN=...) ;
+      - la valeur serialisee signee doit etre OCTET-POUR-OCTET identique a
+        celle emise sur le fil (on reutilise la meme chaine).
+
+    Le firmware reconstruit les octets signes en retirant le prefixe
+    {"header":{...}, puis en reprefixant {. D'ou l'obligation du header EN TETE."""
     key = serialization.load_pem_private_key(ident["key_pem"].encode(), None)
-    obj_json = json.dumps(obj, sort_keys=sort, separators=(",", ":"))
-    inner = '{"' + top + '":' + obj_json
-    inner += (',"user_id":"' + user_id + '"}') if include_uid else "}"
-    inner_bytes = inner.encode()
-    sig = _rsa_sign(key, inner_bytes, pad=pad, salt_len=salt_len)
-    sig_b64 = base64.b64encode(sig).decode()
-    header = (',"header":{"sign_ver":"v1.0","sign_alg":"' + sign_alg
-              + '","sign_string":"' + sig_b64 + '","cert_id":"' + ident["cert_id"]
-              + '","payload_len":' + str(len(inner_bytes)) + "}")
-    return inner[:-1] + header + "}"
+    value = json.dumps(obj, separators=(",", ":"))          # serialise UNE fois
+    signed = '{"' + top + '":' + value + '}'                 # exactement ce qui est signe
+    sig = _rsa_sign(key, signed.encode(), pad=pad, salt_len=salt_len)
+    header = ('{"sign_ver":"v1.0","sign_alg":"' + sign_alg
+              + '","sign_string":"' + base64.b64encode(sig).decode()
+              + '","cert_id":"' + ident["cert_id"]
+              + '","payload_len":' + str(len(signed.encode())) + "}")
+    # header EN PREMIER, puis la MEME chaine `value` qu'on a signee
+    return '{"header":' + header + ',"' + top + '":' + value + '}'
 
 
-def sign_print_command(ident, print_obj, user_id):
-    return sign_command(ident, "print", print_obj, user_id)
+def sign_print_command(ident, print_obj, user_id=""):
+    return sign_command(ident, "print", print_obj)
 
 
-# matrice de sondage quand la signature est refusee (0x0502400A).
-# chaque entree : (libelle, kwargs sign_command, ajouter_timestamp)
+# quand la signature est encore refusee : essai pkcs1 puis pss (padding RSA).
 PROBE_MATRIX = [
-    ("pkcs1 uid=''",    dict(include_uid=True,  user_id="", pad="pkcs1"), False),
-    ("pkcs1 no-uid",    dict(include_uid=False, user_id="", pad="pkcs1"), False),
-    ("pss32 uid=''",    dict(include_uid=True,  user_id="", pad="pss", salt_len=32), False),
-    ("pkcs1 uid='' +ts", dict(include_uid=True, user_id="", pad="pkcs1"), True),
-    ("pkcs1 no-uid +ts", dict(include_uid=False, user_id="", pad="pkcs1"), True),
-    ("pss32 uid='' +ts", dict(include_uid=True, user_id="", pad="pss", salt_len=32), True),
+    ("pkcs1", dict(pad="pkcs1"), False),
+    ("pss32", dict(pad="pss", salt_len=32), False),
+    ("pssMAX", dict(pad="pss", salt_len=None), False),
 ]
 
 

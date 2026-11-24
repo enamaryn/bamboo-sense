@@ -63,12 +63,22 @@ Les commandes `pause / resume / stop / print_speed / clean_print_error` sont
 vérifiées sur matériel (voir `../docs/CRACK.md`). Le `gcode_line` + `param_enc`
 suit la piste documentée : si l'ACK n'est pas `SUCCESS`, note l'`err_code`.
 
-### Forme canonique (clés triées)
+### Schéma de signature (vérifié sur matériel)
 
-L'imprimante recanonicalise la commande en **clés triées** avant de vérifier la
-signature. Les scripts signent donc en `sort_keys` : une commande dont les clés
-ne sont pas déjà dans l'ordre alphabétique (comme `gcode_line`) renvoyait sinon
-`err_code=84033546` (`0x0502400A`, « wrong canonical form »).
+D'après la rétro-ingénierie `ClusterM/open-bamboo-networking` §10.4 (P2S/X2D,
+2026) : il n'y a **aucune canonicalisation**. On signe EXACTEMENT les octets
+`{"print":<valeur>}` (sans `user_id`), et le `header` est placé **EN PREMIER**
+dans l'enveloppe : `{"header":{…},"print":<valeur>}`. Le firmware reconstruit
+les octets signés en retirant le préfixe `{"header":…},` puis en repréfixant
+`{`. La valeur `print` signée doit être **octet-pour-octet** identique à celle
+émise sur le fil.
+
+`err_code=84033546` (`0x0502400A`) = **« bad signature »** (et non « cert
+absent », qui serait `84033545`). Notre erreur venait du `header` placé à la
+**fin** : l'imprimante incluait alors le header dans sa reconstruction →
+signature fausse. Corrigé en mettant le header en tête.
+
+`sequence_id` doit être **≥ 2000** et non réutilisé.
 
 ### Lumière et commandes `system`
 
