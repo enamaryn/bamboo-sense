@@ -534,16 +534,18 @@ def main():
     if not key:
         print("\n[!] Blob de cle introuvable.")
         if certs:
-            print("    (La lecture memoire FONCTIONNE — des certs ont ete vus — mais le")
-            print("     blob de cle n'etait pas present. Il n'est materialise qu'apres")
-            print("     une operation reseau.)")
-            print("    -> Dans Bambu Studio : CONNECTE-toi, ouvre l'onglet 'Appareil'")
-            print("       (Device) de ton imprimante, voire lance une PREPARATION de")
-            print("       print, PUIS relance getkey.bat SANS fermer Studio.")
+            print("    (La lecture memoire FONCTIONNE — des certs ont ete vus — mais ta")
+            print("     version de Studio ne garde PAS la cle sous forme de blob scannable :")
+            print("     elle est derivee a la volee pendant la signature.)")
         else:
             print("    La lecture n'a rien ramene. Sous Windows : lance en Administrateur.")
-        print("    Repli fiable : procdump -accepteula -ma bambu-studio.exe studio.dmp")
-        print("    puis   python extract_studio_key.py --dump studio.dmp")
+        print()
+        print("    -> SOLUTION FIABLE : BambuSlicerKeySaver (binaire Windows pret) :")
+        print("       https://github.com/danielwoz/BambuSlicerKeySaver/releases")
+        print("       FERME Bambu Studio, imprimante ALLUMEE sur le LAN, lance le .exe.")
+        print("       Il ecrit slicer_key.pem. Copie-le a cote de connect.bat, puis")
+        print("       lance connect.bat (il le detecte et signe avec).")
+        print("    -> Ou active le MODE DEVELOPPEUR sur l'imprimante (aucune cle requise).")
         sys.exit(2)
 
     out = Path(args.out_dir)
