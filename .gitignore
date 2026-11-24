@@ -8,3 +8,6 @@ firmware/src/testcerts.h
 webapp/.workdir/
 __pycache__/
 *.pyc
+
+# redistributable bundle, generated from tools/*
+BambooSense-Keyforge.zip
