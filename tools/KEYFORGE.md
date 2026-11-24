@@ -92,12 +92,17 @@ plus simple pour piloter en local.
 intégrée dans Bambu Studio, et le leaf correspondant est déjà de confiance sur
 l'imprimante.
 
-1. **Extraire la clé** une fois avec
-   [BambuSlicerKeySaver](https://github.com/danielwoz/BambuSlicerKeySaver) : il
-   écrit `slicer_key.pem` dans le dossier config de Bambu Studio
-   (⚠️ testé surtout sous Linux). Le certificat assorti est livré avec Bambu
-   Studio (`resources/cert/slicer_base64.cer`).
-2. **Lancer `connect.bat`** : il **détecte automatiquement** `slicer_key.pem`
+1. **Extraire la clé** — deux options :
+   - **Sans rien compiler (recommandé Windows)** : double-clic sur **`getkey.bat`**.
+     Bambu Studio doit être **lancé et connecté** à ton compte. Le script
+     `extract_studio_key.py` lit la mémoire du process Bambu Studio, y trouve le
+     blob chiffré de la clé, le déchiffre et écrit `slicer_key.pem` +
+     `slicer_cert.pem` + `slicer_cert_id.txt` à côté des scripts, puis enchaîne
+     sur le pilotage. (Si l'accès mémoire est refusé, relance en Administrateur.)
+   - Ou [BambuSlicerKeySaver](https://github.com/danielwoz/BambuSlicerKeySaver)
+     (build C++, testé surtout sous Linux).
+2. **Lancer `connect.bat`** (ou `getkey.bat` l'enchaîne) : il **détecte
+   automatiquement** `slicer_key.pem`
    et le cert Studio dans les emplacements habituels (dossier config + dossier
    d'installation de Studio), **dérive le `cert_id`**, **(ré)installe le leaf
    réel** avec la CRL GLOF du firmware (pour garantir la confiance), puis

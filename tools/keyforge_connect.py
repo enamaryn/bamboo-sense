@@ -171,7 +171,7 @@ def find_studio_material(studio_dir=None):
             dirs += [os.path.join(v, "BambuStudio"), v]
     dirs += [os.path.join(home, ".config", "BambuStudio"),
              os.path.join(home, "Library", "Application Support", "BambuStudio"),
-             home, "."]
+             home, ".", os.path.dirname(os.path.abspath(__file__))]
     key_path = None
     for d in dirs:
         p = os.path.join(d, "slicer_key.pem")
