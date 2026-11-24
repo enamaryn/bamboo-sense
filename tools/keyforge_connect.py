@@ -301,9 +301,10 @@ class Printer:
         P2S repond 'json wrong format'. On envoie la forme exacte du firmware
         et on lit la reponse de l'imprimante (elle echo la commande avec result)."""
         mode = "on" if on else "off"
-        env = ('{"system":{"command":"ledctrl","led_node":"chamber_light","led_mode":"'
-               + mode + '","led_on_time":500,"led_off_time":500,"loop_times":0,'
-               '"interval_time":0}}')
+        seq = str(self.next_seq())  # system.* veut un sequence_id en CHAINE
+        env = ('{"system":{"sequence_id":"' + seq + '","command":"ledctrl",'
+               '"led_node":"chamber_light","led_mode":"' + mode + '",'
+               '"led_on_time":500,"led_off_time":500,"loop_times":0,"interval_time":0}}')
         acks = self._cycle([env], collect=3.0)["acks"]
         return next((a for a in acks if a.get("command") == "ledctrl"), None)
 
