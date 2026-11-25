@@ -279,7 +279,8 @@ def sign_command(ident, top, obj, pad="pkcs1", salt_len=32, sign_alg="RSA_SHA256
     Le firmware reconstruit les octets signes en retirant le prefixe
     {"header":{...}, puis en reprefixant {. D'ou l'obligation du header EN TETE."""
     key = serialization.load_pem_private_key(ident["key_pem"].encode(), None)
-    value = json.dumps(obj, separators=(",", ":"))          # serialise UNE fois
+    # cles TRIEES + compact (forme verifiee sur materiel, ha-bambulab-signed)
+    value = json.dumps(obj, separators=(",", ":"), sort_keys=True)  # serialise UNE fois
     signed = '{"' + top + '":' + value + '}'                 # exactement ce qui est signe
     sig = _rsa_sign(key, signed.encode(), pad=pad, salt_len=salt_len)
     header = ('{"sign_ver":"v1.0","sign_alg":"' + sign_alg
@@ -616,39 +617,35 @@ def _home_try(pr, ident, sign_kw, encrypt=False):
 
 
 def do_home(pr, ident, user_id):
-    print("    ...HOMING (G28)...")
-    # 1) MODE DEVELOPPEUR : commande NON signee (le firmware ignore la signature)
-    print("    1) essai NON signe (= Mode Developpeur) ...")
-    ack = pr.send_unsigned("print", {"command": "gcode_line", "param": "G28\n"})
-    print(f"       -> {_fmt(ack)}")
-    if _ack_ok(ack):
-        print("       OK ! Mode Developpeur actif : aucune signature necessaire. Axes en mouvement.")
-        return
-    ec = ack.get("err_code") if ack else None
-    if ec == 84033543:
-        print("       (84033543 = 'non signe refuse' -> imprimante en mode SECURISE)")
-
-    # 2) SIGNE avec l'identite courante (cert auto-signe, ou cle Studio si chargee)
-    print("    2) essai SIGNE avec l'identite courante ...")
-    ack2, _ = pr.gcode(ident, "G28", encrypt=False)
-    print(f"       -> {_fmt(ack2)}")
+    print("    ...HOMING (G28), signe en mode cloud...")
+    # SIGNE + param_enc (G-code chiffre vers le cert de l'imprimante) : la forme
+    # requise par le firmware securise (ha-bambulab-signed / OBN).
+    if not pr.printer_cert:
+        print("    (pas de printer_cert -> reinstallation du cert pour le recuperer...)")
+        pr.install(ident)
+    print("    1) essai SIGNE + param_enc (cles triees) ...")
+    ack2, mode = pr.gcode(ident, "G28", encrypt=True)
+    print(f"       [{mode}] -> {_fmt(ack2)}")
     if _ack_ok(ack2):
-        print("       OK signe : axes en mouvement.")
+        print("       OK : axes en mouvement.")
         return
 
-    ec2 = ack2.get("err_code") if ack2 else None
+    # repli : signe en clair (certains firmwares acceptent param)
+    print("    2) repli SIGNE param clair ...")
+    ack3, _ = pr.gcode(ident, "G28", encrypt=False)
+    print(f"       -> {_fmt(ack3)}")
+    if _ack_ok(ack3):
+        print("       OK : axes en mouvement.")
+        return
+
+    ec2 = (ack3 or ack2 or {}).get("err_code")
     print()
     if ec2 == 84033546:   # 0x0502400A bad signature
-        print("    [DIAGNOSTIC] 0x0502400A 'bad signature' : ce certificat n'est pas")
-        print("    de confiance pour SIGNER sur ce firmware securise (il ne chaine pas")
-        print("    jusqu'a la racine Bambu). Deux solutions :")
-        print("      a) activer le MODE DEVELOPPEUR sur l'imprimante -> l'essai 1 marchera ;")
-        print("      b) fournir la vraie cle Studio partagee : relance avec")
-        print("         --studio-key slicer_key.pem --studio-cert-id slicer_cert_id.txt")
-        print("         (extraite de Bambu Studio, p.ex. via BambuSlicerKeySaver).")
+        print("    [DIAGNOSTIC] 0x0502400A : signature encore refusee. Envoie le journal.")
     elif ec2 == 84033545:
-        print("    [DIAGNOSTIC] 84033545 : signature valide mais cert_id absent du trust")
-        print("    store (reboot l'a vide). Reinstalle le cert (option i) puis reessaie.")
+        print("    [DIAGNOSTIC] 84033545 : cert_id absent du trust store (reboot). Reinstalle (option i).")
+    elif ec2 == 84033544:
+        print("    [DIAGNOSTIC] 84033544 : signature OK mais param_enc/md5 refuse (etape fichier).")
     else:
         print("    [i] echec. Envoie le journal (keyforge_connect.log).")
 
