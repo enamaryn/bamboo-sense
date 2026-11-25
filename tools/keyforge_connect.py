@@ -728,15 +728,13 @@ def main():
         LOG_PATH = None
         print(f"[!] impossible d'ecrire le journal : {e}")
 
-    # 1. identite
+    # 1. identite (depuis la cle USB si presente ; sinon on signera avec la cle Studio)
+    ident, pconf = None, {}
     bundle = find_bundle(args.bundle)
-    if not bundle:
-        print("[!] Cle d'identite introuvable.")
-        print("    Lance d'abord keyforge_usb.py, ou passe --bundle <chemin de la cle>.")
-        sys.exit(1)
-    ident, pconf = load_identity(bundle)
-    print(f"[+] Identite chargee depuis : {bundle}")
-    print(f"    cert_id = {ident['cert_id']}")
+    if bundle:
+        ident, pconf = load_identity(bundle)
+        print(f"[+] Identite chargee depuis : {bundle}")
+        print(f"    cert_id = {ident['cert_id']}")
 
     # identite Studio partagee (firmware securise) : remplace le cert auto-signe.
     # 1) flags explicites ; 2) sinon auto-detection de slicer_key.pem (BambuSlicerKeySaver).
@@ -763,6 +761,11 @@ def main():
         except Exception as e:
             print(f"[!] cle Studio : {e}")
             sys.exit(1)
+
+    if ident is None:
+        print("[!] Aucune identite : passe --studio-key key.pem --studio-cert chain.pem")
+        print("    (+ --studio-crl crl.pem), ou --bundle <cle USB>.")
+        sys.exit(1)
 
     # 2. champs de connexion (priorite : argument > bundle > saisie)
     ip = args.ip or pconf.get("ip") or ""
