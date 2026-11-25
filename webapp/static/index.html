@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BambooSense Keyforge</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <span class="panda">🐼</span>
+    <h1>BambooSense Keyforge</h1>
+    <span class="tag">mint a key · carry it on USB · drive your printer locally</span>
+    <span id="mqttState" class="mqtt">mqtt …</span>
+  </header>
+
+  <!-- 1. IDENTITY -->
+  <section class="card" id="cardIdentity">
+    <h2><span class="step" id="s1">1</span> Mint your identity</h2>
+    <p class="hint">A self-signed certificate, private key, and matching CRL for your printer.
+      The key is generated here and never leaves this machine — except onto the USB key you choose.</p>
+    <div class="grid">
+      <div>
+        <label>Printer serial</label>
+        <input id="genSerial" placeholder="e.g. 01P00A000000000" autocomplete="off">
+      </div>
+      <div>
+        <label>CN prefix (optional)</label>
+        <input id="genPrefix" placeholder="(leave empty)" autocomplete="off">
+      </div>
+      <div>
+        <label>Validity (days)</label>
+        <input id="genDays" type="number" value="3650">
+      </div>
+    </div>
+    <div class="row">
+      <button id="btnGen">Generate identity</button>
+      <span id="idState" class="pill no">no identity yet</span>
+    </div>
+    <div id="idOut" class="kv" style="display:none"></div>
+  </section>
+
+  <!-- 2. PRINTER -->
+  <section class="card" id="cardPrinter">
+    <h2><span class="step" id="s2">2</span> Point at your printer</h2>
+    <p class="hint">Your printer's LAN address and access code (Settings → Network / WLAN on the printer screen).</p>
+    <div class="grid">
+      <div><label>LAN IP</label><input id="pIp" placeholder="192.168.1.50" autocomplete="off"></div>
+      <div><label>Serial</label><input id="pSerial" placeholder="01P00A000000000" autocomplete="off"></div>
+      <div><label>Access code</label><input id="pCode" placeholder="8-digit LAN code" autocomplete="off"></div>
+      <div><label>user_id (optional)</label><input id="pUid" placeholder="0" autocomplete="off"></div>
+    </div>
+    <div class="row">
+      <button id="btnSavePrinter" class="ghost">Save printer</button>
+      <span id="prState" class="pill no">not configured</span>
+    </div>
+  </section>
+
+  <!-- 3. USB -->
+  <section class="card" id="cardUsb">
+    <h2><span class="step" id="s3">3</span> The USB key</h2>
+    <p class="hint">Write the whole bundle (cert, key, CRL, connection info) onto a USB stick so you can
+      carry it to the machine running your web client — then load it back here.</p>
+
+    <label>Target folder (USB mount)</label>
+    <input id="usbPath" placeholder="/media/you/USB  or  /Volumes/USB">
+    <div class="usb-list" id="usbList"></div>
+    <div class="row">
+      <button id="btnUsbScan" class="ghost">Scan for USB drives</button>
+      <button id="btnExport">Write bundle to USB →</button>
+    </div>
+
+    <div class="divider"></div>
+    <p class="hint">Already have a bundle on a USB key? Load it to populate this client.</p>
+    <div class="row">
+      <input id="usbImportPath" placeholder="/media/you/USB/BambooSense" style="flex:1; min-width:220px">
+      <button id="btnImport" class="ghost">← Load from USB</button>
+    </div>
+    <div id="usbOut" class="muted-note"></div>
+  </section>
+
+  <!-- 4. INSTALL -->
+  <section class="card" id="cardInstall">
+    <h2><span class="step" id="s4">4</span> Install the cert on the printer</h2>
+    <p class="hint">Sends <code>security.app_cert_install</code> over MQTT (8883) on your LAN. No Bambu cloud,
+      no LAN-only mode. The printer trusts what it installs — the cert and CRL share an issuer, so it lands cleanly.</p>
+    <div class="row">
+      <button id="btnInstall">Install now</button>
+      <span id="instState" class="pill no">not installed</span>
+    </div>
+    <div id="installOut" class="muted-note"></div>
+  </section>
+
+  <!-- 5. CONTROL -->
+  <section class="card" id="cardControl">
+    <h2><span class="step" id="s5">5</span> Drive the printer</h2>
+    <p class="hint">Signed <code>print.*</code> commands plus live status, all local.</p>
+
+    <div class="row">
+      <button id="btnStatus" class="ghost">Refresh status</button>
+      <span id="gcodeState" class="state-chip">—</span>
+    </div>
+    <div class="stats" id="statGrid"></div>
+
+    <div class="divider"></div>
+    <div class="ctl-group">
+      <button id="btnLightOn" class="ghost">💡 Light on</button>
+      <button id="btnLightOff" class="ghost">Light off</button>
+      <button id="btnPause" class="warn">⏸ Pause</button>
+      <button id="btnResume">▶ Resume</button>
+      <button id="btnStop" class="bad">⏹ Stop</button>
+      <button id="btnClear" class="ghost">Clear error</button>
+    </div>
+
+    <div class="row">
+      <label style="margin:0 6px 0 0; display:inline">Speed</label>
+      <select id="speedSel" style="width:auto">
+        <option value="1">Silent</option>
+        <option value="2" selected>Standard</option>
+        <option value="3">Sport</option>
+        <option value="4">Ludicrous</option>
+      </select>
+      <button id="btnSpeed" class="ghost">Set speed</button>
+    </div>
+
+    <details>
+      <summary>Raw signed command (advanced)</summary>
+      <p class="muted-note">The <code>print</code> object to sign and send. <code>sequence_id</code> is injected automatically.</p>
+      <textarea id="rawCmd">{"command":"print_speed","param":"2"}</textarea>
+      <div class="row"><button id="btnRaw" class="ghost">Sign &amp; send</button></div>
+    </details>
+
+    <div id="ctlOut" class="kv" style="display:none"></div>
+  </section>
+
+</div>
+
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

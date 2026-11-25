@@ -92,3 +92,58 @@ tools/provision_ap.sh bamboo-sense-XXXX "<home wifi ssid>" "<wifi password>"
 Roadmap: FTPS upload relay (cert-gated writes — retest with our cert installed) → signed `project_file` start-from-printer-storage → risky-layer camera check-ins → one dongle per printer, fleet view → MCP server so any agent can drive it.
 
 See `docs/CRACK.md` for the signing crack and `docs/RESEARCH.md` for the full state-of-the-union on controlling Bambu printers in 2025+.
+
+---
+
+## Keyforge — local control in **cloud mode, without Developer Mode**
+
+`tools/` and `webapp/` add a host-side path to **supervise and drive** a
+cloud-paired Bambu/FabCore printer (verified on **P2S**) while the printer stays
+in cloud mode with command verification **ON** — no Developer Mode, no LAN-only.
+
+Read-only telemetry (status, temps, camera, lights) never needed anything. The
+hard part is that modern firmware rejects unsigned `print.*` commands
+(`84033543`, HMS `0500_0500_0001_0007`): every control command must carry an RSA
+signature from an **application certificate the printer trusts** — the same
+material Bambu Studio's networking plugin uses. Keyforge signs commands with
+*your own* extracted slicer credentials and installs that app cert on the printer.
+
+### The process (no secrets live in this repo)
+
+1. **Get your slicer credentials** — the shared application **cert chain + private
+   key + CRL** that Bambu Studio already uses. Extract them from **your own**
+   Studio install (e.g. [BambuKeySaver](https://github.com/Bambuzled/BambuKeySaver):
+   it captures the cloud cert request Studio makes on start-up and decrypts the
+   response into `key.pem` / `chain.pem` / `crl.pem`). **These are private — this
+   repo ships none of them, and `.gitignore` blocks them from ever being committed.**
+2. **Install + sign** — `tools/keyforge_connect.py` installs the cert on the
+   printer over LAN MQTT (`security.app_cert_install`, with a *fresh* CRL) and
+   signs each `print.*` command, then drives it (home, pause/resume/stop, speed,
+   light, raw G-code). It auto-detects `key.pem`/`chain.pem`/`crl.pem` placed next
+   to it, or takes `--studio-key/--studio-cert/--studio-crl`.
+3. **Web app** — `webapp/` is a small local UI around the same core (mint/export
+   identity, install, drive).
+
+### The signing envelope (what makes the printer accept it)
+
+Hardware-verified form (matches `ClusterM/open-bamboo-networking` and
+`ha-bambulab-signed`):
+
+- envelope is **header-first**: `{"header":{…},"print":{…}}`;
+- the signed bytes are exactly `{"print":<section>}`, **compact, keys sorted**,
+  `ensure_ascii=false` — byte-identical to what goes on the wire;
+- `cert_id` = `serial(lowercase hex) + issuer(RFC4514)`;
+- **`sequence_id` is a string**, ≥ 2000 and monotonically increasing;
+- for `gcode_line`, the G-code is sent as **`param_enc`** (RSA-encrypted to the
+  printer's device cert from the install reply), not plaintext `param`.
+
+The trust store lives in printer RAM, so the cert is re-installed on connect /
+after a reboot. The CRL is valid ~1 month; the reusable cert-request URL
+refreshes it.
+
+Details and step-by-step: [`tools/KEYFORGE.md`](tools/KEYFORGE.md).
+
+> **Legal / ToS.** These are Bambu's proprietary shared credentials; using them to
+> bypass command verification is a gray area, especially in a commercial product.
+> You are responsible for compliance. Code reused from the AGPL projects above
+> carries AGPL obligations. Nothing here is affiliated with or endorsed by Bambu Lab.

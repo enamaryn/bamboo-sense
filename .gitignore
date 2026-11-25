@@ -5,3 +5,30 @@ firmware/src/secrets.h
 crypto/mykey.pem
 firmware/src/testcerts.h
 .slapp/
+webapp/.workdir/
+__pycache__/
+*.pyc
+
+# redistributable bundle, generated from tools/*
+BambooSense-Keyforge.zip
+
+# debug log written at runtime
+tools/keyforge_connect.log
+keyforge_connect.log
+BambooSense-complet.zip
+
+# Identifiants Studio extraits / bundles d'identite — NE JAMAIS committer
+key.pem
+chain.pem
+crl.pem
+slicer_*.pem
+slicer_*.txt
+app_key.pem
+app_cert.pem
+trigger-url.txt
+*trigger-response.json
+out/
+tools/out/
+BambooSense/
+*.pcapng
+*keys.log
