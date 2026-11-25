@@ -279,15 +279,16 @@ def sign_command(ident, top, obj, pad="pkcs1", salt_len=32, sign_alg="RSA_SHA256
     Le firmware reconstruit les octets signes en retirant le prefixe
     {"header":{...}, puis en reprefixant {. D'ou l'obligation du header EN TETE."""
     key = serialization.load_pem_private_key(ident["key_pem"].encode(), None)
-    # cles TRIEES + compact (forme verifiee sur materiel, ha-bambulab-signed)
-    value = json.dumps(obj, separators=(",", ":"), sort_keys=True)  # serialise UNE fois
-    signed = '{"' + top + '":' + value + '}'                 # exactement ce qui est signe
-    sig = _rsa_sign(key, signed.encode(), pad=pad, salt_len=salt_len)
-    header = ('{"sign_ver":"v1.0","sign_alg":"' + sign_alg
-              + '","sign_string":"' + base64.b64encode(sig).decode()
-              + '","cert_id":"' + ident["cert_id"]
-              + '","payload_len":' + str(len(signed.encode())) + "}")
-    # header EN PREMIER, puis la MEME chaine `value` qu'on a signee
+    # Forme EXACTE verifiee sur materiel (ha-bambulab-signed, X1C fw 01.12) :
+    # cles triees, compact, ensure_ascii=False ; header EN PREMIER (trie aussi).
+    value = json.dumps(obj, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+    signed = ('{"' + top + '":' + value + '}').encode("utf-8")   # octets signes
+    sig = _rsa_sign(key, signed, pad=pad, salt_len=salt_len)
+    header = json.dumps(
+        {"cert_id": ident["cert_id"], "payload_len": len(signed),
+         "sign_alg": sign_alg, "sign_string": base64.b64encode(sig).decode(),
+         "sign_ver": "v1.0"},
+        separators=(",", ":"), sort_keys=True, ensure_ascii=False)
     return '{"header":' + header + ',"' + top + '":' + value + '}'
 
 
@@ -450,7 +451,7 @@ class Printer:
 
     def send_signed(self, ident, top, obj, **kw):
         seq = self.next_seq()
-        o = {"sequence_id": seq, **obj}
+        o = {"sequence_id": str(seq), **obj}   # sequence_id en CHAINE (ha-bambulab)
         wire = sign_command(ident, top, o, **kw)
         out = self._cycle([wire], collect=5.0)
         ack = next((a for a in out["acks"] if str(a.get("sequence_id")) == str(seq)), None)
