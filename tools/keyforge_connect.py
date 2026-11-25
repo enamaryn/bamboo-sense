@@ -172,7 +172,7 @@ def find_studio_material(studio_dir=None):
     dirs += [os.path.join(home, ".config", "BambuStudio"),
              os.path.join(home, "Library", "Application Support", "BambuStudio"),
              home, ".", os.path.dirname(os.path.abspath(__file__))]
-    key_names = ["slicer_key.pem", "slicer_key.txt", "app_key.pem",
+    key_names = ["slicer_key.pem", "key.pem", "slicer_key.txt", "app_key.pem",
                  os.path.join("appcert_out", "app_key.pem"),
                  os.path.join("autocap", "out", "slicer_key.pem")]
     key_path = None
@@ -184,9 +184,19 @@ def find_studio_material(studio_dir=None):
                 break
         if key_path:
             break
+    # CRL (BambuKeySaver: crl.pem ; frais depuis le cloud = indispensable)
+    crl_path = None
+    for d in dirs:
+        for cn in ("crl.pem", "slicer_crl.pem"):
+            p = os.path.join(d, cn)
+            if os.path.isfile(p):
+                crl_path = p
+                break
+        if crl_path:
+            break
     cert_pem = None
-    cert_names = ["slicer_cert.pem", "slicer.pem", "app_cert.pem",
-                  os.path.join("appcert_out", "app_cert.pem"),
+    cert_names = ["chain.pem", "slicer_cert.pem", "cert_0.pem", "slicer.pem",
+                  "app_cert.pem", os.path.join("appcert_out", "app_cert.pem"),
                   os.path.join("cert", "slicer_base64.cer"),
                   os.path.join("resources", "cert", "slicer_base64.cer"),
                   "slicer_base64.cer"]
@@ -201,7 +211,7 @@ def find_studio_material(studio_dir=None):
                     pass
         if cert_pem:
             break
-    return key_path, cert_pem
+    return key_path, cert_pem, crl_path
 
 
 def load_studio_identity(key_path, cert_path=None, cert_id=None, crl_path=None,
@@ -732,18 +742,22 @@ def main():
     # 1) flags explicites ; 2) sinon auto-detection de slicer_key.pem (BambuSlicerKeySaver).
     studio_key = args.studio_key
     studio_cert_pem = None
+    studio_crl = args.studio_crl
     if not studio_key and not args.no_auto_studio:
-        k, cpem = find_studio_material(args.studio_dir)
+        k, cpem, crl = find_studio_material(args.studio_dir)
         if k:
             studio_key = k
             studio_cert_pem = cpem
+            if crl and not studio_crl:
+                studio_crl = crl
+                print(f"[+] CRL Studio auto-detectee : {crl}")
             print(f"[+] Cle Studio auto-detectee : {k}")
             if not cpem and not args.studio_cert and not args.studio_cert_id:
-                print("    [!] cert Studio introuvable -> passe --studio-cert slicer_cert.pem")
+                print("    [!] cert Studio introuvable -> passe --studio-cert chain.pem")
     if studio_key:
         try:
             ident = load_studio_identity(studio_key, args.studio_cert,
-                                         args.studio_cert_id, args.studio_crl,
+                                         args.studio_cert_id, studio_crl,
                                          cert_pem=studio_cert_pem)
             print(f"[+] Signature via cle Studio partagee. cert_id = {ident['cert_id']}")
         except Exception as e:

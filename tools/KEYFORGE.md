@@ -92,17 +92,18 @@ plus simple pour piloter en local.
 intégrée dans Bambu Studio, et le leaf correspondant est déjà de confiance sur
 l'imprimante.
 
-1. **Extraire la clé** :
-   - **Recommandé (Windows)** : télécharge le binaire prêt de
-     [BambuSlicerKeySaver → Releases](https://github.com/danielwoz/BambuSlicerKeySaver/releases),
-     **ferme Bambu Studio**, imprimante **allumée sur le LAN**, puis double-clic
-     sur `bambu_slicer_key_saver.exe`. Il écrit `slicer_key.pem`. (Les builds
-     récents de Studio dérivent la clé à la volée : seul cet outil, qui pilote le
-     plugin, la récupère de façon fiable.)
-   - `getkey.bat` (fourni) tente d'abord une extraction par **scan mémoire**
-     (Studio lancé + connecté, en Admin) — ça marche sur les anciennes versions
-     de Studio, mais **pas** sur les plus récentes. Il affiche les certs vus et,
-     s'il échoue, renvoie vers la solution ci-dessus.
+1. **Extraire les identifiants** avec
+   [**BambuKeySaver**](https://github.com/Bambuzled/BambuKeySaver) (recommandé,
+   marche sur Studio récent) : il **capture la requête HTTPS** que Bambu Studio
+   envoie au démarrage vers `api.bambulab.com/.../applications/.../cert`
+   (Wireshark + `Capture-BambuCert.ps1`), puis `bambu-api-decrypt.py` déchiffre
+   et écrit **`key.pem`**, **`chain.pem`** et **`crl.pem`**. Pas de login ni de
+   capture mémoire. L'URL capturée (`trigger-url.txt`) se **rejoue dans un
+   navigateur** pour obtenir une CRL fraîche (la CRL n'est valable ~1 mois).
+2. **Lancer `connect.bat`** : il **détecte automatiquement** `key.pem` +
+   `chain.pem` + `crl.pem` (dans le dossier des scripts ou le dossier config de
+   Studio), **installe le leaf + la CRL fraîche** sur l'imprimante
+   (`app_cert_install`) et **signe**. Rien d'autre à taper.
 2. **Lancer `connect.bat`** (ou `getkey.bat` l'enchaîne) : il **détecte
    automatiquement** `slicer_key.pem`
    et le cert Studio dans les emplacements habituels (dossier config + dossier
