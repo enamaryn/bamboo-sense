@@ -16,3 +16,19 @@ BambooSense-Keyforge.zip
 tools/keyforge_connect.log
 keyforge_connect.log
 BambooSense-complet.zip
+
+# Identifiants Studio extraits / bundles d'identite — NE JAMAIS committer
+key.pem
+chain.pem
+crl.pem
+slicer_*.pem
+slicer_*.txt
+app_key.pem
+app_cert.pem
+trigger-url.txt
+*trigger-response.json
+out/
+tools/out/
+BambooSense/
+*.pcapng
+*keys.log
